@@ -11,6 +11,15 @@ python3 -m venv .venv
 
 The Anthropic API key is loaded from `.env` as `ANTHROPIC_API_KEY`.
 
+Pushover notifications are enabled by default. Add these to `.env`:
+
+```bash
+PUSHOVER_APP_TOKEN=...
+PUSHOVER_USER_KEY=...
+```
+
+The Pushover application icon used for this notifier is tracked at `assets/icon.png`. Pushover shows the icon configured on the Pushover application, so this asset is kept here as the source image for that app setting.
+
 ## Commands
 
 Run the scanner:
@@ -31,7 +40,7 @@ Dry-run against a smaller number of messages:
 ./.venv/bin/python wap_alerts.py run --dry-run --limit 100
 ```
 
-Test local macOS notifications, including subtitle and sound:
+Test enabled notifications, including macOS and Pushover:
 
 ```bash
 ./.venv/bin/python wap_alerts.py test-notification

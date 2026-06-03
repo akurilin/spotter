@@ -21,6 +21,7 @@
   },
   "notifications": {
     "macos": true,
+    "pushover": true,
     "title": "WhatsApp topic match",
     "sound_name": "Glass",
     "max_body_chars": 260

@@ -8,6 +8,9 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -31,6 +34,10 @@ class ConfigError(RuntimeError):
 
 
 class ClassificationError(RuntimeError):
+    pass
+
+
+class NotificationError(RuntimeError):
     pass
 
 
@@ -75,17 +82,19 @@ def main() -> int:
         if args.command == "run":
             return run_scan(config, dry_run=args.dry_run, limit_override=args.limit)
         if args.command == "test-notification":
-            send_macos_notification(
-                "WhatsApp topic match",
-                "Ali: I am trying to design a better interview loop for founding AI engineers. Has anyone found a practical way to test judgment without a take-home?",
-                subtitle="Engineering hiring | YC CTOs (active)",
-                sound_name=config.get("notifications", {}).get("sound_name"),
-            )
+            send_test_notifications(config)
             return 0
 
         parser.error(f"Unknown command: {args.command}")
         return 2
-    except (ConfigError, ClassificationError, sqlite3.Error, OSError, subprocess.CalledProcessError) as exc:
+    except (
+        ConfigError,
+        ClassificationError,
+        NotificationError,
+        sqlite3.Error,
+        OSError,
+        subprocess.CalledProcessError,
+    ) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
@@ -630,20 +639,48 @@ def read_existing_alert_keys(path: Path) -> set[tuple[int, str]]:
 def notify_alerts(config: dict[str, Any], alerts: list[dict[str, Any]]) -> None:
     """Send configured local notifications for each alert row."""
     notification_config = config.get("notifications", {})
-    if not notification_config.get("macos", True):
-        return
-
     title = str(notification_config.get("title", "WhatsApp topic match"))
     max_body_chars = int(notification_config.get("max_body_chars", 180))
-    sound_name = notification_config.get("sound_name")
+    macos_enabled = bool(notification_config.get("macos", True))
+    pushover_enabled = bool(notification_config.get("pushover", False))
 
     for alert in alerts:
         subtitle = format_notification_subtitle(alert)
         body = format_notification_body(alert, max_body_chars)
-        try:
-            send_macos_notification(title, body, subtitle=subtitle, sound_name=sound_name)
-        except (OSError, subprocess.CalledProcessError) as exc:
-            print(f"warning: notification failed for message {alert['message_pk']}: {exc}", file=sys.stderr)
+
+        if macos_enabled:
+            try:
+                send_macos_notification(
+                    title,
+                    body,
+                    subtitle=subtitle,
+                    sound_name=notification_config.get("sound_name"),
+                )
+            except (OSError, subprocess.CalledProcessError) as exc:
+                print(f"warning: macOS notification failed for message {alert['message_pk']}: {exc}", file=sys.stderr)
+
+        if pushover_enabled:
+            try:
+                send_pushover_notification(title, body, subtitle=subtitle, notification_config=notification_config)
+            except NotificationError as exc:
+                print(f"warning: Pushover notification failed for message {alert['message_pk']}: {exc}", file=sys.stderr)
+
+
+def send_test_notifications(config: dict[str, Any]) -> None:
+    """Send one sample notification through every enabled notification backend."""
+    notification_config = config.get("notifications", {})
+    title = str(notification_config.get("title", "WhatsApp topic match"))
+    subtitle = "Engineering hiring | YC CTOs (active)"
+    body = (
+        "Ali: I am trying to design a better interview loop for founding AI engineers. "
+        "Has anyone found a practical way to test judgment without a take-home?"
+    )
+
+    if notification_config.get("macos", True):
+        send_macos_notification(title, body, subtitle=subtitle, sound_name=notification_config.get("sound_name"))
+
+    if notification_config.get("pushover", False):
+        send_pushover_notification(title, body, subtitle=subtitle, notification_config=notification_config)
 
 
 def send_macos_notification(title: str, body: str, subtitle: Any = None, sound_name: Any = None) -> None:
@@ -682,6 +719,67 @@ end run
         ],
         check=True,
     )
+
+
+def send_pushover_notification(
+    title: str,
+    body: str,
+    subtitle: Any = None,
+    notification_config: dict[str, Any] | None = None,
+) -> None:
+    """Send an iOS/mobile notification through Pushover."""
+    app_token = os.environ.get("PUSHOVER_APP_TOKEN") or os.environ.get("PUSHOVER_API_TOKEN") or os.environ.get("PUSHOVER_TOKEN")
+    user_key = os.environ.get("PUSHOVER_USER_KEY") or os.environ.get("PUSHOVER_USER")
+    if not app_token or not user_key:
+        raise NotificationError("Pushover is enabled but PUSHOVER_APP_TOKEN and PUSHOVER_USER_KEY are not set.")
+
+    config = notification_config or {}
+    message = body if not subtitle else f"{subtitle}\n{body}"
+    payload: dict[str, Any] = {
+        "token": app_token,
+        "user": user_key,
+        "title": title,
+        "message": message,
+    }
+
+    optional_fields = {
+        "device": "pushover_device",
+        "priority": "pushover_priority",
+        "sound": "pushover_sound_name",
+        "url": "pushover_url",
+        "url_title": "pushover_url_title",
+    }
+    for pushover_key, config_key in optional_fields.items():
+        value = config.get(config_key)
+        if value is not None and str(value) != "":
+            payload[pushover_key] = value
+
+    encoded_payload = urllib.parse.urlencode(payload).encode("utf-8")
+    request = urllib.request.Request(
+        "https://api.pushover.net/1/messages.json",
+        data=encoded_payload,
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            response_body = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        response_body = exc.read().decode("utf-8", errors="replace")
+        raise NotificationError(f"Pushover HTTP {exc.code}: {response_body}") from exc
+    except urllib.error.URLError as exc:
+        raise NotificationError(f"Pushover request failed: {exc.reason}") from exc
+    except OSError as exc:
+        raise NotificationError(f"Pushover request failed: {exc}") from exc
+
+    try:
+        parsed = json.loads(response_body)
+    except json.JSONDecodeError as exc:
+        raise NotificationError("Pushover returned a non-JSON response.") from exc
+
+    if parsed.get("status") != 1:
+        errors = parsed.get("errors", "unknown error")
+        raise NotificationError(f"Pushover rejected notification: {errors}")
 
 
 def format_notification_subtitle(alert: dict[str, Any]) -> str:
