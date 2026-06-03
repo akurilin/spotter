@@ -120,6 +120,8 @@ Claude classification is all-or-nothing per run. If any batch fails because of t
 
 The WhatsApp database is opened with SQLite URI `mode=ro`. This project only writes local app-owned files such as `state.json`, `alerts.jsonl`, and `errors.jsonl`.
 
+Message bodies are passed to Claude as untrusted data, so a crafted WhatsApp message could attempt prompt injection. The blast radius is small: validated matches must reference a `message_pk` from the current batch and a `topic_id` from your config, `osascript` and Pushover receive notification text as arguments rather than interpolated script, and there is no shell, `eval`, or template rendering anywhere in the pipeline. The realistic worst case is misleading or spammy alert text on your screen, not code execution.
+
 ## Logging
 
 The default log directory is `~/Library/Logs/spotter`, which matches the usual macOS convention for per-user application logs. The path and log level are controlled by the `logging` section in `config.json`.
