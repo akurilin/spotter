@@ -15,6 +15,14 @@ For development tooling:
 ./.venv/bin/python -m pip install -r requirements-dev.txt
 ```
 
+Copy the example configuration and edit the topics you want to be alerted about:
+
+```bash
+cp config.example.json config.json
+```
+
+`config.json` is gitignored, so your topics, LaunchAgent label, and other personal settings stay local.
+
 The Anthropic API key is loaded from `.env` as `ANTHROPIC_API_KEY`.
 
 Pushover notifications are enabled by default. Add these to `.env`:
@@ -116,7 +124,7 @@ Notification delivery is best-effort. If macOS or Pushover delivery fails, the s
 
 ## LaunchAgent
 
-The `install-agent` command writes a generated plist to `~/Library/LaunchAgents/net.kurilin.waparser.plist`.
+The `install-agent` command writes a generated plist to `~/Library/LaunchAgents/<launch_agent.label>.plist` using the label configured in `config.json` (default `com.example.waparser`).
 It pins the background job to the same Python virtualenv used for installation by recording `sys.executable` in the plist.
 
 The generated LaunchAgent uses this project directory as `WorkingDirectory`, records the configured interval and run-at-load behavior from `config.json`, and writes stdout/stderr logs to the configured log directory.

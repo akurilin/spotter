@@ -1,0 +1,53 @@
+{
+  "whatsapp": {
+    "db_path": "~/Library/Group Containers/group.net.whatsapp.WhatsApp.shared/ChatStorage.sqlite",
+    "initial_backfill_days": 14,
+    "include_own_messages": false,
+    "max_messages_per_run": 2000,
+    "batch_size": 100,
+    "groups": {
+      "include": [],
+      "exclude": []
+    }
+  },
+  "llm": {
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "max_tokens": 4000,
+    "retry_max_tokens": 8000,
+    "temperature": 0,
+    "timeout_seconds": 120,
+    "max_retries": 3,
+    "use_output_config": true
+  },
+  "notifications": {
+    "macos": true,
+    "pushover": true,
+    "title": "WhatsApp topic match",
+    "sound_name": "Glass",
+    "max_body_chars": 260
+  },
+  "launch_agent": {
+    "label": "com.example.waparser",
+    "start_interval_seconds": 1800,
+    "run_at_load": true
+  },
+  "logging": {
+    "dir": "~/Library/Logs/waparser",
+    "file": "waparser.log",
+    "level": "INFO"
+  },
+  "files": {
+    "state": "state.json",
+    "alerts": "alerts.jsonl",
+    "errors": "errors.jsonl"
+  },
+  "topics": [
+    {
+      "id": "example_topic",
+      "name": "Example topic",
+      "description": "Replace this with a natural-language description of what you want to be alerted about. The classifier matches when a message looks like a clear, substantive instance of this topic. Be specific about what should and should not count: include the kind of intent, role, or context you care about, and explicitly call out near-misses you want excluded (e.g. job posts, announcements, generic mentions). The more precise the description, the fewer false positives.",
+      "threshold": 0.75
+    }
+  ]
+}

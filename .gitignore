@@ -10,3 +10,4 @@ logs/
 state.json
 alerts.jsonl
 errors.jsonl
+config.json

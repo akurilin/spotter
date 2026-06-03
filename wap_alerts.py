@@ -169,7 +169,7 @@ def load_env_file(path: Path) -> None:
 def load_config(path: Path) -> dict[str, Any]:
     """Read and validate the scanner configuration JSON file."""
     if not path.exists():
-        raise ConfigError(f"Missing config file: {path}")
+        raise ConfigError(f"Missing config file: {path}. Copy config.example.json to {path} and edit your topics.")
 
     with path.open("r", encoding="utf-8") as handle:
         config = json.load(handle)
@@ -369,7 +369,7 @@ def launch_agent_config(config: dict[str, Any]) -> dict[str, Any]:
 
 def launch_agent_label(config: dict[str, Any]) -> str:
     """Return the configured launchd label for this scanner."""
-    label = launch_agent_config(config).get("label", "net.kurilin.waparser")
+    label = launch_agent_config(config).get("label", "com.example.waparser")
     if not isinstance(label, str) or not label.strip():
         raise ConfigError("launch_agent.label must be a non-empty string.")
     return label.strip()
