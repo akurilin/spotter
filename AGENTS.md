@@ -5,3 +5,5 @@
 - Do not install or run dependencies against the global Python package repository.
 - Load secrets from `.env`; never print or commit secret values.
 - Open the WhatsApp database read-only only. Never modify WhatsApp files.
+- Before committing Python changes, run Ruff on the project with `./.venv/bin/python -m ruff format .` and `./.venv/bin/python -m ruff check .`.
+- Ruff does not need to run after every small edit; run it at commit/checkpoint time or when formatting/lint feedback is specifically useful.

@@ -9,6 +9,12 @@ python3 -m venv .venv
 ./.venv/bin/python -m pip install -r requirements.txt
 ```
 
+For development tooling:
+
+```bash
+./.venv/bin/python -m pip install -r requirements-dev.txt
+```
+
 The Anthropic API key is loaded from `.env` as `ANTHROPIC_API_KEY`.
 
 Pushover notifications are enabled by default. Add these to `.env`:
@@ -44,6 +50,24 @@ Test enabled notifications, including macOS and Pushover:
 
 ```bash
 ./.venv/bin/python wap_alerts.py test-notification
+```
+
+Format Python code:
+
+```bash
+./.venv/bin/python -m ruff format .
+```
+
+Run Python lint and best-practice checks:
+
+```bash
+./.venv/bin/python -m ruff check .
+```
+
+Apply safe lint fixes:
+
+```bash
+./.venv/bin/python -m ruff check --fix .
 ```
 
 ## State

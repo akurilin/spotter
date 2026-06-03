@@ -12,13 +12,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 try:
-    from anthropic import Anthropic
-    from anthropic import APIConnectionError, APIStatusError, APITimeoutError
+    from anthropic import Anthropic, APIConnectionError, APIStatusError, APITimeoutError
 except ImportError:  # pragma: no cover - handled at runtime for clear setup errors.
     Anthropic = None  # type: ignore[assignment]
     APIConnectionError = APIStatusError = APITimeoutError = Exception  # type: ignore[misc,assignment]
@@ -97,6 +96,7 @@ def main() -> int:
     ) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+
 
 def load_env_file(path: Path) -> None:
     """Load KEY=VALUE pairs from a local .env file into the process environment."""
@@ -304,7 +304,7 @@ def fetch_candidate_messages(
         backfill_days = int(whatsapp_config.get("initial_backfill_days", 14))
         if backfill_days <= 0:
             raise ConfigError("initial_backfill_days must be positive.")
-        min_unix_time = int((datetime.now(timezone.utc) - timedelta(days=backfill_days)).timestamp())
+        min_unix_time = int((datetime.now(UTC) - timedelta(days=backfill_days)).timestamp())
         cursor_sql = f"AND (m.ZMESSAGEDATE + {APPLE_EPOCH_OFFSET_SECONDS}) >= ?"
         params.append(min_unix_time)
 
@@ -424,7 +424,9 @@ def classify_messages(config: dict[str, Any], messages: list[Message]) -> list[d
     return all_matches
 
 
-def classify_batch(client: Any, config: dict[str, Any], topics: list[Topic], batch: list[Message]) -> list[dict[str, Any]]:
+def classify_batch(
+    client: Any, config: dict[str, Any], topics: list[Topic], batch: list[Message]
+) -> list[dict[str, Any]]:
     """Send one message batch to Claude and validate the sparse match response."""
     llm_config = config.get("llm", {})
     payload = {
@@ -542,7 +544,7 @@ def validate_matches(parsed: Any, message_pks: set[int], topic_ids: set[str]) ->
         try:
             message_pk = int(item.get("message_pk"))
             confidence = float(item.get("confidence"))
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError):
             print(f"warning: ignoring malformed Anthropic match: {item}", file=sys.stderr)
             continue
 
@@ -663,7 +665,9 @@ def notify_alerts(config: dict[str, Any], alerts: list[dict[str, Any]]) -> None:
             try:
                 send_pushover_notification(title, body, subtitle=subtitle, notification_config=notification_config)
             except NotificationError as exc:
-                print(f"warning: Pushover notification failed for message {alert['message_pk']}: {exc}", file=sys.stderr)
+                print(
+                    f"warning: Pushover notification failed for message {alert['message_pk']}: {exc}", file=sys.stderr
+                )
 
 
 def send_test_notifications(config: dict[str, Any]) -> None:
@@ -728,7 +732,9 @@ def send_pushover_notification(
     notification_config: dict[str, Any] | None = None,
 ) -> None:
     """Send an iOS/mobile notification through Pushover."""
-    app_token = os.environ.get("PUSHOVER_APP_TOKEN") or os.environ.get("PUSHOVER_API_TOKEN") or os.environ.get("PUSHOVER_TOKEN")
+    app_token = (
+        os.environ.get("PUSHOVER_APP_TOKEN") or os.environ.get("PUSHOVER_API_TOKEN") or os.environ.get("PUSHOVER_TOKEN")
+    )
     user_key = os.environ.get("PUSHOVER_USER_KEY") or os.environ.get("PUSHOVER_USER")
     if not app_token or not user_key:
         raise NotificationError("Pushover is enabled but PUSHOVER_APP_TOKEN and PUSHOVER_USER_KEY are not set.")
@@ -811,7 +817,7 @@ def chunks(items: list[Message], size: int) -> list[list[Message]]:
 
 def now_iso() -> str:
     """Return the current local timestamp in ISO-8601 format."""
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    return datetime.now(UTC).astimezone().isoformat(timespec="seconds")
 
 
 if __name__ == "__main__":
