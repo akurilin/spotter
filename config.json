@@ -1,0 +1,52 @@
+{
+  "whatsapp": {
+    "db_path": "~/Library/Group Containers/group.net.whatsapp.WhatsApp.shared/ChatStorage.sqlite",
+    "initial_backfill_days": 14,
+    "include_own_messages": false,
+    "max_messages_per_run": 2000,
+    "batch_size": 200,
+    "groups": {
+      "include": [],
+      "exclude": []
+    }
+  },
+  "llm": {
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "max_tokens": 1500,
+    "temperature": 0,
+    "timeout_seconds": 120,
+    "max_retries": 3,
+    "use_output_config": true
+  },
+  "notifications": {
+    "macos": true,
+    "title": "WhatsApp topic match",
+    "max_body_chars": 180
+  },
+  "files": {
+    "state": "state.json",
+    "alerts": "alerts.jsonl",
+    "errors": "errors.jsonl"
+  },
+  "topics": [
+    {
+      "id": "cto_coaching",
+      "name": "CTO coaching",
+      "description": "Someone is looking for a CTO coach, fractional CTO help, engineering leadership mentorship, or similar guidance.",
+      "threshold": 0.75
+    },
+    {
+      "id": "engineering_hiring",
+      "name": "Engineering hiring",
+      "description": "Someone is discussing the practice of engineering hiring from the standpoint of a founder, startup CTO, or engineering leader. Match questions or substantive discussion about interview loops, candidate evaluation, hiring process design, leveling, compensation strategy, recruiters, org design, closing candidates, or hiring tradeoffs. Do not match job posts, recruiting announcements, referral requests, candidate sourcing blasts, or messages that simply say someone is hiring.",
+      "threshold": 0.75
+    },
+    {
+      "id": "robotics_nyc",
+      "name": "Robotics in NYC",
+      "description": "Someone is discussing robotics, embodied AI, hardware startups, robotics events, jobs, labs, meetups, or opportunities in New York City.",
+      "threshold": 0.75
+    }
+  ]
+}
