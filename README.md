@@ -1,6 +1,6 @@
 # spotter
 
-Local WhatsApp group scanner for topic-based alerts. It reads the macOS WhatsApp SQLite database in read-only mode, sends batches of new group messages to Claude, writes matches to `alerts.jsonl`, and optionally sends a macOS notification.
+Local WhatsApp group scanner for topic-based alerts. It reads the macOS WhatsApp SQLite database in read-only mode, sends batches of new group messages to Claude, writes matches to `alerts.jsonl`, and delivers notifications via macOS Notification Center and/or [Pushover](https://pushover.net/) for push to your phone.
 
 ## Requirements
 
@@ -120,6 +120,15 @@ Claude classification is all-or-nothing per run. If any batch fails because of t
 The WhatsApp database is opened with SQLite URI `mode=ro`. This project only writes local app-owned files such as `state.json`, `alerts.jsonl`, and `errors.jsonl`.
 
 Message bodies are passed to Claude as untrusted data, so a crafted WhatsApp message could attempt prompt injection. The blast radius is small: validated matches must reference a `message_pk` from the current batch and a `topic_id` from your config, `osascript` and Pushover receive notification text as arguments rather than interpolated script, and there is no shell, `eval`, or template rendering anywhere in the pipeline. The realistic worst case is misleading or spammy alert text on your screen, not code execution.
+
+## Notifications
+
+Two backends can be enabled independently from the `notifications` section of `config.json`:
+
+- **macOS Notification Center** (`notifications.macos`, default on) posts a banner via `osascript`. Good when you're at your laptop.
+- **Pushover** (`notifications.pushover`) pushes to phones, tablets, and the Pushover desktop apps. Useful when you want WhatsApp topic hits to follow you off the laptop without leaving WhatsApp itself enabled for noisy group notifications. Requires `PUSHOVER_APP_TOKEN` and `PUSHOVER_USER_KEY` in `.env`, plus a free or paid Pushover account.
+
+Optional Pushover knobs (`pushover_device`, `pushover_priority`, `pushover_sound_name`, `pushover_url`, `pushover_url_title`) can also be set in `notifications` and are forwarded to the Pushover API.
 
 ## Logging
 
