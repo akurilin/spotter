@@ -10,8 +10,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from waparser.errors import ConfigError, LaunchAgentError
-from waparser.paths import app_log_dir, app_log_path
+from spotter.errors import ConfigError, LaunchAgentError
+from spotter.paths import app_log_dir, app_log_path
 
 
 def launch_agent_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -24,7 +24,7 @@ def launch_agent_config(config: dict[str, Any]) -> dict[str, Any]:
 
 def launch_agent_label(config: dict[str, Any]) -> str:
     """Return the configured launchd label for this scanner."""
-    label = launch_agent_config(config).get("label", "com.example.waparser")
+    label = launch_agent_config(config).get("label", "com.example.spotter")
     if not isinstance(label, str) or not label.strip():
         raise ConfigError("launch_agent.label must be a non-empty string.")
     return label.strip()
@@ -46,7 +46,7 @@ def launch_agent_service_name(config: dict[str, Any]) -> str:
 
 
 def project_root() -> Path:
-    """Return the repo root, which is the parent of the waparser package directory."""
+    """Return the repo root, which is the parent of the spotter package directory."""
     return Path(__file__).resolve().parent.parent
 
 
@@ -59,7 +59,7 @@ def local_python_path() -> Path:
     expected_venv = project_root() / ".venv"
     if python_path.parent.parent != expected_venv:
         raise LaunchAgentError(
-            "Install the LaunchAgent with the local virtualenv Python: ./.venv/bin/python wap_alerts.py install-agent"
+            "Install the LaunchAgent with the local virtualenv Python: ./.venv/bin/python spotter.py install-agent"
         )
     return python_path
 
@@ -80,7 +80,7 @@ def build_launch_agent_plist(config: dict[str, Any], config_path: Path) -> dict[
         "Label": launch_agent_label(config),
         "ProgramArguments": [
             str(local_python_path()),
-            str(root / "wap_alerts.py"),
+            str(root / "spotter.py"),
             "--config",
             str(config_path),
             "run",

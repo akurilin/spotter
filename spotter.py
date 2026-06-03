@@ -14,12 +14,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from waparser.errors import ClassificationError, ConfigError, LaunchAgentError, NotificationError
-from waparser.launchagent import install_launch_agent, show_launch_agent_status, uninstall_launch_agent
-from waparser.notifications import NotificationFailure, notify_alerts, send_test_notifications
-from waparser.paths import app_log_path, logging_config
-from waparser.usage import UsageAccumulator, UsageRecord, new_run_id, write_usage_record
-from waparser.whatsapp_db import (
+from spotter.errors import ClassificationError, ConfigError, LaunchAgentError, NotificationError
+from spotter.launchagent import install_launch_agent, show_launch_agent_status, uninstall_launch_agent
+from spotter.notifications import NotificationFailure, notify_alerts, send_test_notifications
+from spotter.paths import app_log_path, logging_config
+from spotter.usage import UsageAccumulator, UsageRecord, new_run_id, write_usage_record
+from spotter.whatsapp_db import (
     Message,
     count_configured_groups,
     fetch_candidate_messages,
@@ -37,7 +37,7 @@ except ImportError:  # pragma: no cover - handled at runtime for clear setup err
 
 DEFAULT_CONFIG_PATH = Path("config.json")
 DEFAULT_MODEL = "claude-sonnet-4-6"
-LOGGER = logging.getLogger("waparser")
+LOGGER = logging.getLogger("spotter")
 
 
 @dataclass(frozen=True)

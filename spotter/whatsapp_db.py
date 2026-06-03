@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from waparser.errors import ConfigError
+from spotter.errors import ConfigError
 
 APPLE_EPOCH_OFFSET_SECONDS = 978_307_200
 BASE64ISH_SENDER_RE = re.compile(r"^[A-Za-z0-9+/]{4,}={0,2}$")

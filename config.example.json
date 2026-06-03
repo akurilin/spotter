@@ -28,20 +28,20 @@
     "max_body_chars": 260
   },
   "launch_agent": {
-    "label": "com.example.waparser",
+    "label": "com.example.spotter",
     "start_interval_seconds": 1800,
     "run_at_load": true
   },
   "logging": {
-    "dir": "~/Library/Logs/waparser",
-    "file": "waparser.log",
+    "dir": "~/Library/Logs/spotter",
+    "file": "spotter.log",
     "level": "INFO"
   },
   "files": {
-    "state": "~/Library/Application Support/waparser/state.json",
-    "alerts": "~/Library/Logs/waparser/alerts.jsonl",
-    "errors": "~/Library/Logs/waparser/errors.jsonl",
-    "usage": "~/Library/Logs/waparser/usage.jsonl"
+    "state": "~/Library/Application Support/spotter/state.json",
+    "alerts": "~/Library/Logs/spotter/alerts.jsonl",
+    "errors": "~/Library/Logs/spotter/errors.jsonl",
+    "usage": "~/Library/Logs/spotter/usage.jsonl"
   },
   "topics": [
     {

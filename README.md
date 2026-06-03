@@ -1,4 +1,4 @@
-# WhatsApp Topic Alerts
+# spotter
 
 Local WhatsApp group scanner for topic-based alerts. It reads the macOS WhatsApp SQLite database in read-only mode, sends batches of new group messages to Claude, writes matches to `alerts.jsonl`, and optionally sends a macOS notification.
 
@@ -45,31 +45,31 @@ The Pushover application icon used for this notifier is tracked at `assets/icon.
 Run the scanner:
 
 ```bash
-./.venv/bin/python wap_alerts.py run
+./.venv/bin/python spotter.py run
 ```
 
 Dry-run without writing state, alerts, or notifications:
 
 ```bash
-./.venv/bin/python wap_alerts.py run --dry-run
+./.venv/bin/python spotter.py run --dry-run
 ```
 
 Dry-run against a smaller number of messages:
 
 ```bash
-./.venv/bin/python wap_alerts.py run --dry-run --limit 100
+./.venv/bin/python spotter.py run --dry-run --limit 100
 ```
 
 Test enabled notifications, including macOS and Pushover:
 
 ```bash
-./.venv/bin/python wap_alerts.py test-notification
+./.venv/bin/python spotter.py test-notification
 ```
 
 Install the macOS LaunchAgent:
 
 ```bash
-./.venv/bin/python wap_alerts.py install-agent
+./.venv/bin/python spotter.py install-agent
 ```
 
 The LaunchAgent schedule and whether it runs immediately on install are controlled by the `launch_agent` section in `config.json`.
@@ -77,19 +77,19 @@ The LaunchAgent schedule and whether it runs immediately on install are controll
 Check LaunchAgent status:
 
 ```bash
-./.venv/bin/python wap_alerts.py agent-status
+./.venv/bin/python spotter.py agent-status
 ```
 
 Tail the scanner log:
 
 ```bash
-tail -f ~/Library/Logs/waparser/waparser.log
+tail -f ~/Library/Logs/spotter/spotter.log
 ```
 
 Uninstall the LaunchAgent:
 
 ```bash
-./.venv/bin/python wap_alerts.py uninstall-agent
+./.venv/bin/python spotter.py uninstall-agent
 ```
 
 Format Python code:
@@ -122,7 +122,7 @@ The WhatsApp database is opened with SQLite URI `mode=ro`. This project only wri
 
 ## Logging
 
-The default log directory is `~/Library/Logs/waparser`, which matches the usual macOS convention for per-user application logs. The path and log level are controlled by the `logging` section in `config.json`.
+The default log directory is `~/Library/Logs/spotter`, which matches the usual macOS convention for per-user application logs. The path and log level are controlled by the `logging` section in `config.json`.
 
 The scanner logs operational progress such as cursor state, group/message counts, Claude model, batch progress, match counts, alert counts, and notification backend activity. Routine logs avoid message bodies; dry-run alert output still prints matching messages to the terminal for review.
 
@@ -130,7 +130,7 @@ Notification delivery is best-effort. If macOS or Pushover delivery fails, the s
 
 ## LaunchAgent
 
-The `install-agent` command writes a generated plist to `~/Library/LaunchAgents/<launch_agent.label>.plist` using the label configured in `config.json` (default `com.example.waparser`).
+The `install-agent` command writes a generated plist to `~/Library/LaunchAgents/<launch_agent.label>.plist` using the label configured in `config.json` (default `com.example.spotter`).
 It pins the background job to the same Python virtualenv used for installation by recording `sys.executable` in the plist.
 
 The generated LaunchAgent uses this project directory as `WorkingDirectory`, records the configured interval and run-at-load behavior from `config.json`, and writes stdout/stderr logs to the configured log directory.
@@ -138,7 +138,7 @@ The generated LaunchAgent uses this project directory as `WorkingDirectory`, rec
 Do not install it with global Python. Use:
 
 ```bash
-./.venv/bin/python wap_alerts.py install-agent
+./.venv/bin/python spotter.py install-agent
 ```
 
 # WIP / TODO
