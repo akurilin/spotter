@@ -75,7 +75,12 @@ def main() -> int:
         if args.command == "run":
             return run_scan(config, dry_run=args.dry_run, limit_override=args.limit)
         if args.command == "test-notification":
-            send_macos_notification("WhatsApp topic match", "Notification plumbing is working.")
+            send_macos_notification(
+                "WhatsApp topic match",
+                "Ali: I am trying to design a better interview loop for founding AI engineers. Has anyone found a practical way to test judgment without a take-home?",
+                subtitle="Engineering hiring | YC CTOs (active)",
+                sound_name=config.get("notifications", {}).get("sound_name"),
+            )
             return 0
 
         parser.error(f"Unknown command: {args.command}")
@@ -630,29 +635,64 @@ def notify_alerts(config: dict[str, Any], alerts: list[dict[str, Any]]) -> None:
 
     title = str(notification_config.get("title", "WhatsApp topic match"))
     max_body_chars = int(notification_config.get("max_body_chars", 180))
+    sound_name = notification_config.get("sound_name")
 
     for alert in alerts:
+        subtitle = format_notification_subtitle(alert)
         body = format_notification_body(alert, max_body_chars)
         try:
-            send_macos_notification(title, body)
+            send_macos_notification(title, body, subtitle=subtitle, sound_name=sound_name)
         except (OSError, subprocess.CalledProcessError) as exc:
             print(f"warning: notification failed for message {alert['message_pk']}: {exc}", file=sys.stderr)
 
 
-def send_macos_notification(title: str, body: str) -> None:
+def send_macos_notification(title: str, body: str, subtitle: Any = None, sound_name: Any = None) -> None:
     """Send a macOS notification using osascript."""
     script = """
 on run argv
-    display notification (item 2 of argv) with title (item 1 of argv)
+    set notificationTitle to item 1 of argv
+    set notificationBody to item 2 of argv
+    set notificationSubtitle to item 3 of argv
+    set notificationSound to item 4 of argv
+
+    if notificationSound is "" then
+        if notificationSubtitle is "" then
+            display notification notificationBody with title notificationTitle
+        else
+            display notification notificationBody with title notificationTitle subtitle notificationSubtitle
+        end if
+    else
+        if notificationSubtitle is "" then
+            display notification notificationBody with title notificationTitle sound name notificationSound
+        else
+            display notification notificationBody with title notificationTitle subtitle notificationSubtitle sound name notificationSound
+        end if
+    end if
 end run
 """
-    subprocess.run(["osascript", "-e", script, title, body], check=True)
+    subprocess.run(
+        [
+            "osascript",
+            "-e",
+            script,
+            title,
+            body,
+            str(subtitle or ""),
+            str(sound_name or ""),
+        ],
+        check=True,
+    )
+
+
+def format_notification_subtitle(alert: dict[str, Any]) -> str:
+    """Format the topic and group context shown below the notification title."""
+    return f"{alert['topic_name']} | {alert['group_name']}"
 
 
 def format_notification_body(alert: dict[str, Any], max_chars: int) -> str:
-    """Format and truncate the body text shown in a macOS notification."""
+    """Format and truncate the sender and message text shown in a macOS notification."""
     text = str(alert["text"]).replace("\n", " ")
-    body = f"{alert['topic_name']} | {alert['group_name']} | {alert['sender_name']}: {text}"
+    body = f"{alert['sender_name']}: {text}"
     if len(body) <= max_chars:
         return body
     return body[: max_chars - 1].rstrip() + "..."

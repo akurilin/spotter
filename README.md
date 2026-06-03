@@ -31,7 +31,7 @@ Dry-run against a smaller number of messages:
 ./.venv/bin/python wap_alerts.py run --dry-run --limit 100
 ```
 
-Test local macOS notifications:
+Test local macOS notifications, including subtitle and sound:
 
 ```bash
 ./.venv/bin/python wap_alerts.py test-notification

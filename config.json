@@ -22,7 +22,8 @@
   "notifications": {
     "macos": true,
     "title": "WhatsApp topic match",
-    "max_body_chars": 180
+    "sound_name": "Glass",
+    "max_body_chars": 260
   },
   "files": {
     "state": "state.json",
