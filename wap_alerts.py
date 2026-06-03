@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
+import plistlib
 import sqlite3
 import subprocess
 import sys
@@ -26,6 +28,7 @@ except ImportError:  # pragma: no cover - handled at runtime for clear setup err
 APPLE_EPOCH_OFFSET_SECONDS = 978_307_200
 DEFAULT_CONFIG_PATH = Path("config.json")
 DEFAULT_MODEL = "claude-sonnet-4-6"
+LOGGER = logging.getLogger("waparser")
 
 
 class ConfigError(RuntimeError):
@@ -37,6 +40,10 @@ class ClassificationError(RuntimeError):
 
 
 class NotificationError(RuntimeError):
+    pass
+
+
+class LaunchAgentError(RuntimeError):
     pass
 
 
@@ -59,6 +66,23 @@ class Message:
     text: str
 
 
+@dataclass(frozen=True)
+class FetchResult:
+    messages: list[Message]
+    fetched_high_water_pk: int | None
+    raw_message_count: int
+
+
+@dataclass(frozen=True)
+class NotificationFailure:
+    backend: str
+    message_pk: int
+    topic_id: str
+    topic_name: str
+    group_name: str
+    error: str
+
+
 def main() -> int:
     """Parse CLI arguments and dispatch to the requested command."""
     parser = argparse.ArgumentParser(description="Scan WhatsApp groups for topic matches.")
@@ -71,31 +95,54 @@ def main() -> int:
     run_parser.add_argument("--limit", type=int, help="Override max_messages_per_run for this run.")
 
     subparsers.add_parser("test-notification", help="Send a test macOS notification.")
+    subparsers.add_parser("install-agent", help="Install or update the per-user macOS LaunchAgent.")
+    subparsers.add_parser("uninstall-agent", help="Unload and remove the per-user macOS LaunchAgent.")
+    subparsers.add_parser("agent-status", help="Show the current LaunchAgent status.")
 
     args = parser.parse_args()
 
     try:
-        load_env_file(Path(".env"))
-        config = load_config(Path(args.config))
+        config_path = resolve_config_path(Path(args.config))
+        load_env_file(config_path.parent / ".env")
+        config = load_config(config_path)
+        configure_logging(config)
+        LOGGER.debug("Command started: %s", args.command)
 
         if args.command == "run":
             return run_scan(config, dry_run=args.dry_run, limit_override=args.limit)
         if args.command == "test-notification":
             send_test_notifications(config)
             return 0
+        if args.command == "install-agent":
+            return install_launch_agent(config, config_path)
+        if args.command == "uninstall-agent":
+            return uninstall_launch_agent(config)
+        if args.command == "agent-status":
+            return show_launch_agent_status(config)
 
         parser.error(f"Unknown command: {args.command}")
         return 2
     except (
         ConfigError,
         ClassificationError,
+        LaunchAgentError,
         NotificationError,
         sqlite3.Error,
         OSError,
         subprocess.CalledProcessError,
     ) as exc:
+        if LOGGER.handlers:
+            LOGGER.exception("Command failed.")
         print(f"error: {exc}", file=sys.stderr)
         return 1
+
+
+def resolve_config_path(path: Path) -> Path:
+    """Resolve the config path relative to the current directory."""
+    expanded_path = path.expanduser()
+    if expanded_path.is_absolute():
+        return expanded_path
+    return (Path.cwd() / expanded_path).resolve()
 
 
 def load_env_file(path: Path) -> None:
@@ -139,6 +186,29 @@ def load_config(path: Path) -> dict[str, Any]:
     return config
 
 
+def configure_logging(config: dict[str, Any]) -> None:
+    """Configure console and file logging for interactive and LaunchAgent runs."""
+    log_path = app_log_path(config)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    level_name = str(logging_config(config).get("level", "INFO")).upper()
+    level = getattr(logging, level_name, logging.INFO)
+
+    LOGGER.handlers.clear()
+    LOGGER.setLevel(level)
+    LOGGER.propagate = False
+
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    file_handler.setLevel(level)
+    LOGGER.addHandler(file_handler)
+
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(logging.Formatter("%(message)s"))
+    console_handler.setLevel(level)
+    LOGGER.addHandler(console_handler)
+
+
 def get_topics(config: dict[str, Any]) -> list[Topic]:
     """Convert configured topic dictionaries into typed Topic objects."""
     topics = []
@@ -168,13 +238,45 @@ def run_scan(config: dict[str, Any], dry_run: bool, limit_override: int | None) 
     alerts_path = config_path(config, "alerts")
     errors_path = config_path(config, "errors")
     state = read_json_file(state_path, default={})
+    last_pk = state.get("last_processed_message_pk")
+    topics = get_topics(config)
+    llm_config = config.get("llm", {})
+    whatsapp_config = config.get("whatsapp", {})
+
+    LOGGER.info(
+        "Scanner run starting: dry_run=%s limit_override=%s model=%s batch_size=%s topics=%s",
+        dry_run,
+        limit_override,
+        llm_config.get("model", DEFAULT_MODEL),
+        whatsapp_config.get("batch_size", 200),
+        len(topics),
+    )
 
     with open_whatsapp_db(config) as conn:
-        messages, fetched_high_water_pk = fetch_candidate_messages(conn, config, state, limit_override)
+        cursor_time = fetch_message_local_time(conn, last_pk) if isinstance(last_pk, int) else None
+        group_count = count_configured_groups(conn, config)
+        fetch_result = fetch_candidate_messages(conn, config, state, limit_override)
         max_group_pk = fetch_max_group_message_pk(conn)
 
+    messages = fetch_result.messages
+    fetched_high_water_pk = fetch_result.fetched_high_water_pk
+    if isinstance(last_pk, int):
+        LOGGER.info("Cursor before scan: message_pk=%s local_time=%s", last_pk, cursor_time or "unknown")
+    else:
+        LOGGER.info(
+            "Cursor before scan: empty; using initial_backfill_days=%s",
+            whatsapp_config.get("initial_backfill_days", 14),
+        )
+    LOGGER.info(
+        "WhatsApp scan scope: groups=%s raw_messages=%s configured_messages=%s high_water_pk=%s",
+        group_count,
+        fetch_result.raw_message_count,
+        len(messages),
+        fetched_high_water_pk,
+    )
+
     if not messages:
-        print("No configured group messages to classify.")
+        LOGGER.info("No configured group messages to classify.")
         next_cursor = fetched_high_water_pk
         if next_cursor is None and state.get("last_processed_message_pk") is None:
             next_cursor = max_group_pk
@@ -182,10 +284,10 @@ def run_scan(config: dict[str, Any], dry_run: bool, limit_override: int | None) 
             state["last_processed_message_pk"] = next_cursor
             state["last_run_at"] = now_iso()
             atomic_write_json(state_path, state)
-            print(f"Advanced cursor to message {next_cursor}.")
+            LOGGER.info("Advanced cursor to message %s.", next_cursor)
         return 0
 
-    print(f"Fetched {len(messages)} group messages for classification.", flush=True)
+    LOGGER.info("Fetched %s group messages for classification.", len(messages))
     existing_alert_keys = read_existing_alert_keys(alerts_path)
 
     try:
@@ -193,27 +295,35 @@ def run_scan(config: dict[str, Any], dry_run: bool, limit_override: int | None) 
     except ClassificationError as exc:
         if not dry_run:
             write_error(errors_path, "classification_failed", str(exc), {"message_count": len(messages)})
+        LOGGER.exception("Classification failed; cursor will not advance.")
         raise
 
     alerts = build_alerts(config, messages, matches, existing_alert_keys)
     max_processed_pk = fetched_high_water_pk or max(message.message_pk for message in messages)
+    LOGGER.info("Classification complete: matches=%s alerts_after_thresholds=%s", len(matches), len(alerts))
 
     if dry_run:
-        print(f"Dry-run: {len(alerts)} alert(s) would be written.")
+        LOGGER.info("Dry-run: %s alert(s) would be written.", len(alerts))
         for alert in alerts:
             print(format_alert_line(alert))
-        print(f"Dry-run: cursor would advance to message {max_processed_pk}.")
+        LOGGER.info("Dry-run: cursor would advance to message %s.", max_processed_pk)
         return 0
 
     append_jsonl(alerts_path, alerts)
-    notify_alerts(config, alerts)
+    notification_failures = notify_alerts(config, alerts)
+    if notification_failures:
+        try:
+            write_notification_failures(errors_path, notification_failures)
+            LOGGER.warning("Recorded %s notification failure(s) in %s.", len(notification_failures), errors_path)
+        except OSError as exc:
+            LOGGER.warning("Could not write notification failures to %s: %s", errors_path, exc)
 
     state["last_processed_message_pk"] = max_processed_pk
     state["last_run_at"] = now_iso()
     atomic_write_json(state_path, state)
 
-    print(f"Wrote {len(alerts)} alert(s).")
-    print(f"Advanced cursor to message {max_processed_pk}.")
+    LOGGER.info("Wrote %s alert(s).", len(alerts))
+    LOGGER.info("Advanced cursor to message %s.", max_processed_pk)
     return 0
 
 
@@ -223,6 +333,194 @@ def config_path(config: dict[str, Any], key: str) -> Path:
     if not isinstance(value, str) or not value:
         raise ConfigError(f"Missing files.{key} in config.")
     return Path(value).expanduser()
+
+
+def logging_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Return logging settings with macOS-friendly defaults."""
+    config_value = config.get("logging", {})
+    if not isinstance(config_value, dict):
+        raise ConfigError("logging config must be an object.")
+    return config_value
+
+
+def app_log_dir(config: dict[str, Any]) -> Path:
+    """Return the directory for application and LaunchAgent logs."""
+    value = logging_config(config).get("dir", "~/Library/Logs/waparser")
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError("logging.dir must be a non-empty string.")
+    return Path(value).expanduser()
+
+
+def app_log_path(config: dict[str, Any]) -> Path:
+    """Return the main application log file path."""
+    value = logging_config(config).get("file", "waparser.log")
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError("logging.file must be a non-empty string.")
+    return app_log_dir(config) / value
+
+
+def launch_agent_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Return LaunchAgent settings with conservative defaults."""
+    agent_config = config.get("launch_agent", {})
+    if not isinstance(agent_config, dict):
+        raise ConfigError("launch_agent config must be an object.")
+    return agent_config
+
+
+def launch_agent_label(config: dict[str, Any]) -> str:
+    """Return the configured launchd label for this scanner."""
+    label = launch_agent_config(config).get("label", "net.kurilin.waparser")
+    if not isinstance(label, str) or not label.strip():
+        raise ConfigError("launch_agent.label must be a non-empty string.")
+    return label.strip()
+
+
+def launch_agent_domain() -> str:
+    """Return the launchctl domain for the current GUI user session."""
+    return f"gui/{os.getuid()}"
+
+
+def launch_agent_plist_path(config: dict[str, Any]) -> Path:
+    """Return the per-user LaunchAgents plist path for this scanner."""
+    return Path.home() / "Library" / "LaunchAgents" / f"{launch_agent_label(config)}.plist"
+
+
+def launch_agent_service_name(config: dict[str, Any]) -> str:
+    """Return the launchctl service target for this scanner."""
+    return f"{launch_agent_domain()}/{launch_agent_label(config)}"
+
+
+def project_root() -> Path:
+    """Return the project directory that contains this script."""
+    return Path(__file__).resolve().parent
+
+
+def local_python_path() -> Path:
+    """Return the current Python executable and require it to be inside the local venv."""
+    python_path = Path(sys.executable)
+    if not python_path.is_absolute():
+        python_path = (Path.cwd() / python_path).resolve()
+
+    expected_venv = project_root() / ".venv"
+    if python_path.parent.parent != expected_venv:
+        raise LaunchAgentError(
+            "Install the LaunchAgent with the local virtualenv Python: ./.venv/bin/python wap_alerts.py install-agent"
+        )
+    return python_path
+
+
+def build_launch_agent_plist(config: dict[str, Any], config_path: Path) -> dict[str, Any]:
+    """Build the launchd property list for periodic scanner execution."""
+    agent_config = launch_agent_config(config)
+    interval_seconds = int(agent_config.get("start_interval_seconds", 1800))
+    if interval_seconds <= 0:
+        raise ConfigError("launch_agent.start_interval_seconds must be positive.")
+
+    root = project_root()
+    logs_dir = app_log_dir(config)
+    stdout_path = logs_dir / "launchd.out.log"
+    stderr_path = logs_dir / "launchd.err.log"
+
+    return {
+        "Label": launch_agent_label(config),
+        "ProgramArguments": [
+            str(local_python_path()),
+            str(root / "wap_alerts.py"),
+            "--config",
+            str(config_path),
+            "run",
+        ],
+        "WorkingDirectory": str(root),
+        "RunAtLoad": bool(agent_config.get("run_at_load", True)),
+        "StartInterval": interval_seconds,
+        "StandardOutPath": str(stdout_path),
+        "StandardErrorPath": str(stderr_path),
+        "EnvironmentVariables": {
+            "PYTHONUNBUFFERED": "1",
+        },
+    }
+
+
+def install_launch_agent(config: dict[str, Any], config_path: Path) -> int:
+    """Install or update the per-user macOS LaunchAgent."""
+    app_log_dir(config).mkdir(parents=True, exist_ok=True)
+
+    plist_path = launch_agent_plist_path(config)
+    plist_path.parent.mkdir(parents=True, exist_ok=True)
+    plist_data = build_launch_agent_plist(config, config_path)
+    atomic_write_plist(plist_path, plist_data)
+
+    subprocess.run(["plutil", "-lint", str(plist_path)], check=True)
+    bootout_launch_agent(config)
+    subprocess.run(["launchctl", "bootstrap", launch_agent_domain(), str(plist_path)], check=True)
+
+    print(f"Installed LaunchAgent {launch_agent_label(config)}.")
+    print(f"Plist: {plist_path}")
+    print(f"Logs: {app_log_dir(config)}")
+    return 0
+
+
+def uninstall_launch_agent(config: dict[str, Any]) -> int:
+    """Unload and remove the per-user macOS LaunchAgent."""
+    plist_path = launch_agent_plist_path(config)
+    bootout_launch_agent(config)
+
+    if plist_path.exists():
+        plist_path.unlink()
+        print(f"Removed LaunchAgent plist: {plist_path}")
+    else:
+        print(f"LaunchAgent plist was already absent: {plist_path}")
+    return 0
+
+
+def show_launch_agent_status(config: dict[str, Any]) -> int:
+    """Print the current launchd status for this scanner."""
+    label = launch_agent_label(config)
+    plist_path = launch_agent_plist_path(config)
+    service_name = launch_agent_service_name(config)
+    result = subprocess.run(["launchctl", "print", service_name], capture_output=True, text=True, check=False)
+
+    print(f"Label: {label}")
+    print(f"Plist: {plist_path}")
+    print(f"Plist exists: {plist_path.exists()}")
+    print(f"App log: {app_log_path(config)}")
+    if result.returncode == 0:
+        print("Loaded: yes")
+    else:
+        print("Loaded: no")
+        if result.stderr.strip() and "Could not find service" not in result.stderr:
+            print(f"launchctl: {result.stderr.strip()}")
+    return 0
+
+
+def bootout_launch_agent(config: dict[str, Any]) -> None:
+    """Unload the LaunchAgent if launchd currently knows about it."""
+    plist_path = launch_agent_plist_path(config)
+    service_result = subprocess.run(
+        ["launchctl", "bootout", launch_agent_service_name(config)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if service_result.returncode == 0:
+        return
+
+    if plist_path.exists():
+        subprocess.run(
+            ["launchctl", "bootout", launch_agent_domain(), str(plist_path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+
+def atomic_write_plist(path: Path, data: dict[str, Any]) -> None:
+    """Write a plist atomically using XML format."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("wb", dir=path.parent, delete=False) as handle:
+        plistlib.dump(data, handle, fmt=plistlib.FMT_XML, sort_keys=False)
+        temp_name = handle.name
+    os.replace(temp_name, path)
 
 
 def read_json_file(path: Path, default: Any) -> Any:
@@ -269,6 +567,22 @@ def write_error(path: Path, error_type: str, message: str, details: dict[str, An
     )
 
 
+def write_notification_failures(path: Path, failures: list[NotificationFailure]) -> None:
+    """Record notification delivery failures without duplicating message bodies."""
+    append_jsonl(
+        path,
+        [
+            {
+                "created_at": now_iso(),
+                "type": "notification_failed",
+                "message": failure.error,
+                "details": failure.__dict__,
+            }
+            for failure in failures
+        ],
+    )
+
+
 def open_whatsapp_db(config: dict[str, Any]) -> sqlite3.Connection:
     """Open the local WhatsApp SQLite database in read-only mode."""
     db_path = Path(config["whatsapp"]["db_path"]).expanduser()
@@ -285,7 +599,7 @@ def fetch_candidate_messages(
     config: dict[str, Any],
     state: dict[str, Any],
     limit_override: int | None,
-) -> tuple[list[Message], int | None]:
+) -> FetchResult:
     """Fetch new text-bearing group messages and return them with the raw high-water mark."""
     whatsapp_config = config.get("whatsapp", {})
     include_own_messages = bool(whatsapp_config.get("include_own_messages", False))
@@ -343,7 +657,47 @@ def fetch_candidate_messages(
 
     raw_messages = [message_from_row(row) for row in rows]
     fetched_high_water_pk = max((message.message_pk for message in raw_messages), default=None)
-    return filter_groups(raw_messages, whatsapp_config.get("groups", {})), fetched_high_water_pk
+    return FetchResult(
+        messages=filter_groups(raw_messages, whatsapp_config.get("groups", {})),
+        fetched_high_water_pk=fetched_high_water_pk,
+        raw_message_count=len(raw_messages),
+    )
+
+
+def fetch_message_local_time(conn: sqlite3.Connection, message_pk: Any) -> str | None:
+    """Return the local timestamp for a WhatsApp message primary key."""
+    if not isinstance(message_pk, int):
+        return None
+    row = conn.execute(
+        f"""
+        SELECT datetime(ZMESSAGEDATE + {APPLE_EPOCH_OFFSET_SECONDS}, 'unixepoch', 'localtime') AS local_time
+        FROM ZWAMESSAGE
+        WHERE Z_PK = ?
+        """,
+        [message_pk],
+    ).fetchone()
+    if not row or row["local_time"] is None:
+        return None
+    return str(row["local_time"])
+
+
+def count_configured_groups(conn: sqlite3.Connection, config: dict[str, Any]) -> int:
+    """Count WhatsApp groups that match the current include/exclude configuration."""
+    rows = conn.execute(
+        """
+        SELECT
+            COALESCE(NULLIF(s.ZPARTNERNAME, ''), s.ZCONTACTJID) AS group_name,
+            s.ZCONTACTJID AS group_jid
+        FROM ZWACHATSESSION s
+        WHERE
+            (s.ZGROUPINFO IS NOT NULL OR s.ZSESSIONTYPE IN (1, 4) OR s.ZCONTACTJID LIKE '%@g.us')
+            AND s.ZCONTACTJID NOT LIKE '%@status'
+        """
+    ).fetchall()
+    group_config = config.get("whatsapp", {}).get("groups", {})
+    return sum(
+        1 for row in rows if group_is_included(str(row["group_name"] or ""), str(row["group_jid"] or ""), group_config)
+    )
 
 
 def message_from_row(row: sqlite3.Row) -> Message:
@@ -361,18 +715,17 @@ def message_from_row(row: sqlite3.Row) -> Message:
 
 def filter_groups(messages: list[Message], group_config: dict[str, Any]) -> list[Message]:
     """Apply configured group include and exclude filters to fetched messages."""
+    return [message for message in messages if group_is_included(message.group_name, message.group_jid, group_config)]
+
+
+def group_is_included(group_name: str, group_jid: str, group_config: dict[str, Any]) -> bool:
+    """Return whether a group name/JID passes configured include and exclude filters."""
     include = normalize_filter_values(group_config.get("include", []))
     exclude = normalize_filter_values(group_config.get("exclude", []))
-
-    filtered = []
-    for message in messages:
-        haystack = {message.group_name.casefold(), message.group_jid.casefold()}
-        if include and not any(value in haystack for value in include):
-            continue
-        if exclude and any(value in haystack for value in exclude):
-            continue
-        filtered.append(message)
-    return filtered
+    haystack = {group_name.casefold(), group_jid.casefold()}
+    if include and not any(value in haystack for value in include):
+        return False
+    return not (exclude and any(value in haystack for value in exclude))
 
 
 def normalize_filter_values(values: Any) -> set[str]:
@@ -419,8 +772,29 @@ def classify_messages(config: dict[str, Any], messages: list[Message]) -> list[d
 
     all_matches: list[dict[str, Any]] = []
     topics = get_topics(config)
-    for batch in chunks(messages, batch_size):
-        all_matches.extend(classify_batch(client, config, topics, batch))
+    model = str(llm_config.get("model", DEFAULT_MODEL))
+    batches = chunks(messages, batch_size)
+    LOGGER.info("Claude classification starting: model=%s batches=%s messages=%s", model, len(batches), len(messages))
+    for batch_index, batch in enumerate(batches, start=1):
+        LOGGER.info(
+            "Classifying batch %s/%s: messages=%s pk_range=%s-%s time_range=%s to %s",
+            batch_index,
+            len(batches),
+            len(batch),
+            batch[0].message_pk,
+            batch[-1].message_pk,
+            batch[0].local_time,
+            batch[-1].local_time,
+        )
+        try:
+            batch_matches = classify_batch(client, config, topics, batch)
+        except ClassificationError as exc:
+            raise ClassificationError(
+                f"Batch {batch_index}/{len(batches)} failed "
+                f"(messages={len(batch)} pk_range={batch[0].message_pk}-{batch[-1].message_pk}): {exc}"
+            ) from exc
+        LOGGER.info("Batch %s/%s complete: matches=%s", batch_index, len(batches), len(batch_matches))
+        all_matches.extend(batch_matches)
     return all_matches
 
 
@@ -429,6 +803,12 @@ def classify_batch(
 ) -> list[dict[str, Any]]:
     """Send one message batch to Claude and validate the sparse match response."""
     llm_config = config.get("llm", {})
+    max_tokens = int(llm_config.get("max_tokens", 4000))
+    retry_max_tokens = int(llm_config.get("retry_max_tokens", max_tokens))
+    if max_tokens <= 0 or retry_max_tokens <= 0:
+        raise ConfigError("llm.max_tokens and llm.retry_max_tokens must be positive.")
+    retry_max_tokens = max(max_tokens, retry_max_tokens)
+
     payload = {
         "topics": [topic.__dict__ for topic in topics],
         "valid_message_pks": [message.message_pk for message in batch],
@@ -437,7 +817,7 @@ def classify_batch(
 
     kwargs = {
         "model": str(llm_config.get("model", DEFAULT_MODEL)),
-        "max_tokens": int(llm_config.get("max_tokens", 1500)),
+        "max_tokens": max_tokens,
         "temperature": float(llm_config.get("temperature", 0)),
         "system": system_prompt(),
         "messages": [
@@ -451,14 +831,23 @@ def classify_batch(
     if bool(llm_config.get("use_output_config", True)):
         kwargs["output_config"] = {"format": {"type": "json_schema", "schema": matches_schema()}}
 
+    response = None
     try:
-        try:
-            response = client.messages.create(**kwargs)
-        except TypeError as exc:
-            if "output_config" not in str(exc):
-                raise
-            kwargs.pop("output_config", None)
-            response = client.messages.create(**kwargs)
+        for attempt_index, attempt_max_tokens in enumerate([max_tokens, retry_max_tokens], start=1):
+            kwargs["max_tokens"] = attempt_max_tokens
+            response = create_message_with_optional_output_config(client, kwargs)
+            if response_stop_reason(response) != "max_tokens":
+                break
+            if attempt_max_tokens >= retry_max_tokens:
+                raise ClassificationError(
+                    "Anthropic response hit max_tokens before producing complete JSON "
+                    f"(max_tokens={attempt_max_tokens}). Increase llm.retry_max_tokens or lower whatsapp.batch_size."
+                )
+            LOGGER.warning(
+                "Anthropic response hit max_tokens on attempt %s; retrying with max_tokens=%s.",
+                attempt_index,
+                retry_max_tokens,
+            )
     except (APIConnectionError, APITimeoutError) as exc:
         raise ClassificationError(f"Anthropic connection failure after retries: {exc}") from exc
     except APIStatusError as exc:
@@ -467,11 +856,32 @@ def classify_batch(
         suffix = f" request_id={request_id}" if request_id else ""
         raise ClassificationError(f"Anthropic API status error {status_code}.{suffix} {exc}") from exc
 
+    if response is None:
+        raise ClassificationError("Anthropic returned no response.")
+
     parsed = getattr(response, "parsed_output", None)
     if parsed is None:
         parsed = parse_json_response(response)
 
     return validate_matches(parsed, {message.message_pk for message in batch}, {topic.id for topic in topics})
+
+
+def create_message_with_optional_output_config(client: Any, kwargs: dict[str, Any]) -> Any:
+    """Create an Anthropic message, falling back if the SDK lacks output_config support."""
+    try:
+        return client.messages.create(**kwargs)
+    except TypeError as exc:
+        if "output_config" not in str(exc):
+            raise
+        fallback_kwargs = dict(kwargs)
+        fallback_kwargs.pop("output_config", None)
+        return client.messages.create(**fallback_kwargs)
+
+
+def response_stop_reason(response: Any) -> str | None:
+    """Return Claude's stop reason when present."""
+    value = getattr(response, "stop_reason", None)
+    return str(value) if value is not None else None
 
 
 def system_prompt() -> str:
@@ -483,6 +893,7 @@ def system_prompt() -> str:
         "Use the exact message_pk and topic id values from the input. "
         "Never invent, approximate, or alter message_pk values; omit a match if the exact id is not present. "
         "Confidence must be a number from 0 to 1. "
+        "Keep reason under 120 characters and notification under 100 characters. "
         "Return JSON with one top-level key named matches."
     )
 
@@ -524,11 +935,20 @@ def parse_json_response(response: Any) -> dict[str, Any]:
     raw_text = "".join(text_parts).strip()
     if not raw_text:
         raise ClassificationError("Anthropic returned no text content.")
+    if response_stop_reason(response) == "max_tokens":
+        raise ClassificationError(
+            "Anthropic response hit max_tokens before valid JSON could be parsed. "
+            "Increase llm.max_tokens/llm.retry_max_tokens or lower whatsapp.batch_size."
+        )
 
     try:
         return json.loads(raw_text)
     except json.JSONDecodeError as exc:
-        raise ClassificationError(f"Could not parse Anthropic JSON response: {exc}") from exc
+        preview = raw_text[-500:] if len(raw_text) > 500 else raw_text
+        raise ClassificationError(
+            f"Could not parse Anthropic JSON response: {exc}. stop_reason={response_stop_reason(response)} "
+            f"response_chars={len(raw_text)} tail={preview!r}"
+        ) from exc
 
 
 def validate_matches(parsed: Any, message_pks: set[int], topic_ids: set[str]) -> list[dict[str, Any]]:
@@ -545,7 +965,7 @@ def validate_matches(parsed: Any, message_pks: set[int], topic_ids: set[str]) ->
             message_pk = int(item.get("message_pk"))
             confidence = float(item.get("confidence"))
         except (TypeError, ValueError):
-            print(f"warning: ignoring malformed Anthropic match: {item}", file=sys.stderr)
+            LOGGER.warning("Ignoring malformed Anthropic match: %s", item)
             continue
 
         topic_id = str(item.get("topic_id", ""))
@@ -553,13 +973,13 @@ def validate_matches(parsed: Any, message_pks: set[int], topic_ids: set[str]) ->
         notification = str(item.get("notification", "")).strip()
 
         if message_pk not in message_pks:
-            print(f"warning: ignoring Anthropic match with unknown message_pk: {message_pk}", file=sys.stderr)
+            LOGGER.warning("Ignoring Anthropic match with unknown message_pk: %s", message_pk)
             continue
         if topic_id not in topic_ids:
-            print(f"warning: ignoring Anthropic match with unknown topic_id: {topic_id}", file=sys.stderr)
+            LOGGER.warning("Ignoring Anthropic match with unknown topic_id: %s", topic_id)
             continue
         if not 0 <= confidence <= 1:
-            print(f"warning: ignoring Anthropic match with invalid confidence: {confidence}", file=sys.stderr)
+            LOGGER.warning("Ignoring Anthropic match with invalid confidence: %s", confidence)
             continue
 
         valid_matches.append(
@@ -638,13 +1058,15 @@ def read_existing_alert_keys(path: Path) -> set[tuple[int, str]]:
     return keys
 
 
-def notify_alerts(config: dict[str, Any], alerts: list[dict[str, Any]]) -> None:
+def notify_alerts(config: dict[str, Any], alerts: list[dict[str, Any]]) -> list[NotificationFailure]:
     """Send configured local notifications for each alert row."""
     notification_config = config.get("notifications", {})
     title = str(notification_config.get("title", "WhatsApp topic match"))
     max_body_chars = int(notification_config.get("max_body_chars", 180))
     macos_enabled = bool(notification_config.get("macos", True))
     pushover_enabled = bool(notification_config.get("pushover", False))
+    failures: list[NotificationFailure] = []
+    LOGGER.info("Sending notifications: alerts=%s macos=%s pushover=%s", len(alerts), macos_enabled, pushover_enabled)
 
     for alert in alerts:
         subtitle = format_notification_subtitle(alert)
@@ -659,15 +1081,33 @@ def notify_alerts(config: dict[str, Any], alerts: list[dict[str, Any]]) -> None:
                     sound_name=notification_config.get("sound_name"),
                 )
             except (OSError, subprocess.CalledProcessError) as exc:
-                print(f"warning: macOS notification failed for message {alert['message_pk']}: {exc}", file=sys.stderr)
+                LOGGER.warning("macOS notification failed for message %s: %s", alert["message_pk"], exc)
+                failures.append(build_notification_failure("macos", alert, exc))
 
         if pushover_enabled:
             try:
                 send_pushover_notification(title, body, subtitle=subtitle, notification_config=notification_config)
             except NotificationError as exc:
-                print(
-                    f"warning: Pushover notification failed for message {alert['message_pk']}: {exc}", file=sys.stderr
-                )
+                LOGGER.warning("Pushover notification failed for message %s: %s", alert["message_pk"], exc)
+                failures.append(build_notification_failure("pushover", alert, exc))
+
+    successful_delivery_count = (
+        (len(alerts) * int(macos_enabled)) + (len(alerts) * int(pushover_enabled)) - len(failures)
+    )
+    LOGGER.info("Notification delivery complete: successes=%s failures=%s", successful_delivery_count, len(failures))
+    return failures
+
+
+def build_notification_failure(backend: str, alert: dict[str, Any], exc: Exception) -> NotificationFailure:
+    """Build a structured notification failure record without storing message text."""
+    return NotificationFailure(
+        backend=backend,
+        message_pk=int(alert["message_pk"]),
+        topic_id=str(alert["topic_id"]),
+        topic_name=str(alert["topic_name"]),
+        group_name=str(alert["group_name"]),
+        error=str(exc),
+    )
 
 
 def send_test_notifications(config: dict[str, Any]) -> None:

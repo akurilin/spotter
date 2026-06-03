@@ -4,7 +4,7 @@
     "initial_backfill_days": 14,
     "include_own_messages": false,
     "max_messages_per_run": 2000,
-    "batch_size": 200,
+    "batch_size": 100,
     "groups": {
       "include": [],
       "exclude": []
@@ -13,7 +13,8 @@
   "llm": {
     "provider": "anthropic",
     "model": "claude-sonnet-4-6",
-    "max_tokens": 1500,
+    "max_tokens": 4000,
+    "retry_max_tokens": 8000,
     "temperature": 0,
     "timeout_seconds": 120,
     "max_retries": 3,
@@ -25,6 +26,16 @@
     "title": "WhatsApp topic match",
     "sound_name": "Glass",
     "max_body_chars": 260
+  },
+  "launch_agent": {
+    "label": "net.kurilin.waparser",
+    "start_interval_seconds": 1800,
+    "run_at_load": true
+  },
+  "logging": {
+    "dir": "~/Library/Logs/waparser",
+    "file": "waparser.log",
+    "level": "INFO"
   },
   "files": {
     "state": "state.json",
