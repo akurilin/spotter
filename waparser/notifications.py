@@ -13,8 +13,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from errors import NotificationError
-from whatsapp_db import clean_sender_name, sender_name_from_jid
+from waparser.errors import NotificationError
+from waparser.whatsapp_db import clean_sender_name, sender_name_from_jid
 
 LOGGER = logging.getLogger("waparser")
 

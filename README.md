@@ -2,6 +2,12 @@
 
 Local WhatsApp group scanner for topic-based alerts. It reads the macOS WhatsApp SQLite database in read-only mode, sends batches of new group messages to Claude, writes matches to `alerts.jsonl`, and optionally sends a macOS notification.
 
+## Requirements
+
+- **macOS only.** The scanner reads the WhatsApp desktop database at `~/Library/Group Containers/group.net.whatsapp.WhatsApp.shared/ChatStorage.sqlite`, sends notifications through `osascript`, and runs on a schedule via launchd. None of these are portable to Linux or Windows.
+- **Anthropic API only.** Classification is hard-coded to the Anthropic SDK; there is no provider abstraction.
+- **Python 3.12+.** The code uses `from datetime import UTC` and PEP 604 union syntax.
+
 ## Setup
 
 ```bash

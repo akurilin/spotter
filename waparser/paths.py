@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from errors import ConfigError
+from waparser.errors import ConfigError
 
 
 def logging_config(config: dict[str, Any]) -> dict[str, Any]:

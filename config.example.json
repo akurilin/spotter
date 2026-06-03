@@ -38,9 +38,10 @@
     "level": "INFO"
   },
   "files": {
-    "state": "state.json",
-    "alerts": "alerts.jsonl",
-    "errors": "errors.jsonl"
+    "state": "~/Library/Application Support/waparser/state.json",
+    "alerts": "~/Library/Logs/waparser/alerts.jsonl",
+    "errors": "~/Library/Logs/waparser/errors.jsonl",
+    "usage": "~/Library/Logs/waparser/usage.jsonl"
   },
   "topics": [
     {

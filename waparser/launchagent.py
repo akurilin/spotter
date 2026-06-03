@@ -10,8 +10,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from errors import ConfigError, LaunchAgentError
-from paths import app_log_dir, app_log_path
+from waparser.errors import ConfigError, LaunchAgentError
+from waparser.paths import app_log_dir, app_log_path
 
 
 def launch_agent_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -46,8 +46,8 @@ def launch_agent_service_name(config: dict[str, Any]) -> str:
 
 
 def project_root() -> Path:
-    """Return the project directory that contains this script."""
-    return Path(__file__).resolve().parent
+    """Return the repo root, which is the parent of the waparser package directory."""
+    return Path(__file__).resolve().parent.parent
 
 
 def local_python_path() -> Path:

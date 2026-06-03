@@ -14,11 +14,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from errors import ClassificationError, ConfigError, LaunchAgentError, NotificationError
-from launchagent import install_launch_agent, show_launch_agent_status, uninstall_launch_agent
-from notifications import NotificationFailure, notify_alerts, send_test_notifications
-from paths import app_log_path, logging_config
-from whatsapp_db import (
+from waparser.errors import ClassificationError, ConfigError, LaunchAgentError, NotificationError
+from waparser.launchagent import install_launch_agent, show_launch_agent_status, uninstall_launch_agent
+from waparser.notifications import NotificationFailure, notify_alerts, send_test_notifications
+from waparser.paths import app_log_path, logging_config
+from waparser.usage import UsageAccumulator, UsageRecord, new_run_id, write_usage_record
+from waparser.whatsapp_db import (
     Message,
     count_configured_groups,
     fetch_candidate_messages,
@@ -201,94 +202,140 @@ def run_scan(config: dict[str, Any], dry_run: bool, limit_override: int | None) 
     state_path = config_path(config, "state")
     alerts_path = config_path(config, "alerts")
     errors_path = config_path(config, "errors")
+    usage_path = optional_config_path(config, "usage")
     state = read_json_file(state_path, default={})
     last_pk = state.get("last_processed_message_pk")
     topics = get_topics(config)
     llm_config = config.get("llm", {})
     whatsapp_config = config.get("whatsapp", {})
+    model = str(llm_config.get("model", DEFAULT_MODEL))
+
+    run_id = new_run_id()
+    started_at = now_iso()
+    accumulator = UsageAccumulator()
+    status = "ok"
+    raw_message_count = 0
+    configured_message_count = 0
+    alert_count = 0
 
     LOGGER.info(
-        "Scanner run starting: dry_run=%s limit_override=%s model=%s batch_size=%s topics=%s",
+        "Scanner run starting: run_id=%s dry_run=%s limit_override=%s model=%s batch_size=%s topics=%s",
+        run_id,
         dry_run,
         limit_override,
-        llm_config.get("model", DEFAULT_MODEL),
+        model,
         whatsapp_config.get("batch_size", 200),
         len(topics),
     )
 
-    with open_whatsapp_db(config) as conn:
-        cursor_time = fetch_message_local_time(conn, last_pk) if isinstance(last_pk, int) else None
-        group_count = count_configured_groups(conn, config)
-        fetch_result = fetch_candidate_messages(conn, config, state, limit_override)
-        max_group_pk = fetch_max_group_message_pk(conn)
-
-    messages = fetch_result.messages
-    fetched_high_water_pk = fetch_result.fetched_high_water_pk
-    if isinstance(last_pk, int):
-        LOGGER.info("Cursor before scan: message_pk=%s local_time=%s", last_pk, cursor_time or "unknown")
-    else:
-        LOGGER.info(
-            "Cursor before scan: empty; using initial_backfill_days=%s",
-            whatsapp_config.get("initial_backfill_days", 14),
-        )
-    LOGGER.info(
-        "WhatsApp scan scope: groups=%s raw_messages=%s configured_messages=%s high_water_pk=%s",
-        group_count,
-        fetch_result.raw_message_count,
-        len(messages),
-        fetched_high_water_pk,
-    )
-
-    if not messages:
-        LOGGER.info("No configured group messages to classify.")
-        next_cursor = fetched_high_water_pk
-        if next_cursor is None and state.get("last_processed_message_pk") is None:
-            next_cursor = max_group_pk
-        if not dry_run and next_cursor is not None:
-            state["last_processed_message_pk"] = next_cursor
-            state["last_run_at"] = now_iso()
-            atomic_write_json(state_path, state)
-            LOGGER.info("Advanced cursor to message %s.", next_cursor)
-        return 0
-
-    LOGGER.info("Fetched %s group messages for classification.", len(messages))
-    existing_alert_keys = read_existing_alert_keys(alerts_path)
-
     try:
-        matches = classify_messages(config, messages)
-    except ClassificationError as exc:
-        if not dry_run:
-            write_error(errors_path, "classification_failed", str(exc), {"message_count": len(messages)})
-        LOGGER.exception("Classification failed; cursor will not advance.")
-        raise
+        with open_whatsapp_db(config) as conn:
+            cursor_time = fetch_message_local_time(conn, last_pk) if isinstance(last_pk, int) else None
+            group_count = count_configured_groups(conn, config)
+            fetch_result = fetch_candidate_messages(conn, config, state, limit_override)
+            max_group_pk = fetch_max_group_message_pk(conn)
 
-    alerts = build_alerts(config, messages, matches, existing_alert_keys)
-    max_processed_pk = fetched_high_water_pk or max(message.message_pk for message in messages)
-    LOGGER.info("Classification complete: matches=%s alerts_after_thresholds=%s", len(matches), len(alerts))
+        messages = fetch_result.messages
+        raw_message_count = fetch_result.raw_message_count
+        configured_message_count = len(messages)
+        fetched_high_water_pk = fetch_result.fetched_high_water_pk
 
-    if dry_run:
-        LOGGER.info("Dry-run: %s alert(s) would be written.", len(alerts))
-        for alert in alerts:
-            print(format_alert_line(alert))
-        LOGGER.info("Dry-run: cursor would advance to message %s.", max_processed_pk)
-        return 0
+        if isinstance(last_pk, int):
+            LOGGER.info("Cursor before scan: message_pk=%s local_time=%s", last_pk, cursor_time or "unknown")
+        else:
+            LOGGER.info(
+                "Cursor before scan: empty; using initial_backfill_days=%s",
+                whatsapp_config.get("initial_backfill_days", 14),
+            )
+        LOGGER.info(
+            "WhatsApp scan scope: groups=%s raw_messages=%s configured_messages=%s high_water_pk=%s",
+            group_count,
+            raw_message_count,
+            configured_message_count,
+            fetched_high_water_pk,
+        )
 
-    append_jsonl(alerts_path, alerts)
-    notification_failures = notify_alerts(config, alerts)
-    if notification_failures:
+        if not messages:
+            status = "no_messages"
+            LOGGER.info("No configured group messages to classify.")
+            next_cursor = fetched_high_water_pk
+            if next_cursor is None and state.get("last_processed_message_pk") is None:
+                next_cursor = max_group_pk
+            if not dry_run and next_cursor is not None:
+                state["last_processed_message_pk"] = next_cursor
+                state["last_run_at"] = now_iso()
+                atomic_write_json(state_path, state)
+                LOGGER.info("Advanced cursor to message %s.", next_cursor)
+            return 0
+
+        LOGGER.info("Fetched %s group messages for classification.", configured_message_count)
+        existing_alert_keys = read_existing_alert_keys(alerts_path)
+
         try:
-            write_notification_failures(errors_path, notification_failures)
-            LOGGER.warning("Recorded %s notification failure(s) in %s.", len(notification_failures), errors_path)
-        except OSError as exc:
-            LOGGER.warning("Could not write notification failures to %s: %s", errors_path, exc)
+            matches = classify_messages(config, messages, accumulator)
+        except ClassificationError as exc:
+            status = "classification_failed"
+            if not dry_run:
+                write_error(errors_path, "classification_failed", str(exc), {"message_count": len(messages)})
+            LOGGER.exception("Classification failed; cursor will not advance.")
+            raise
 
-    state["last_processed_message_pk"] = max_processed_pk
-    state["last_run_at"] = now_iso()
-    atomic_write_json(state_path, state)
+        alerts = build_alerts(config, messages, matches, existing_alert_keys)
+        alert_count = len(alerts)
+        max_processed_pk = fetched_high_water_pk or max(message.message_pk for message in messages)
+        LOGGER.info("Classification complete: matches=%s alerts_after_thresholds=%s", len(matches), alert_count)
 
-    LOGGER.info("Wrote %s alert(s).", len(alerts))
-    LOGGER.info("Advanced cursor to message %s.", max_processed_pk)
-    return 0
+        if dry_run:
+            LOGGER.info("Dry-run: %s alert(s) would be written.", alert_count)
+            for alert in alerts:
+                print(format_alert_line(alert))
+            LOGGER.info("Dry-run: cursor would advance to message %s.", max_processed_pk)
+            return 0
+
+        append_jsonl(alerts_path, alerts)
+        notification_failures = notify_alerts(config, alerts)
+        if notification_failures:
+            try:
+                write_notification_failures(errors_path, notification_failures)
+                LOGGER.warning("Recorded %s notification failure(s) in %s.", len(notification_failures), errors_path)
+            except OSError as exc:
+                LOGGER.warning("Could not write notification failures to %s: %s", errors_path, exc)
+
+        state["last_processed_message_pk"] = max_processed_pk
+        state["last_run_at"] = now_iso()
+        atomic_write_json(state_path, state)
+
+        LOGGER.info("Wrote %s alert(s).", alert_count)
+        LOGGER.info("Advanced cursor to message %s.", max_processed_pk)
+        return 0
+    except Exception:
+        if status == "ok":
+            status = "error"
+        raise
+    finally:
+        if usage_path is not None:
+            try:
+                write_usage_record(
+                    usage_path,
+                    UsageRecord(
+                        run_id=run_id,
+                        started_at=started_at,
+                        completed_at=now_iso(),
+                        model=model,
+                        dry_run=dry_run,
+                        status=status,
+                        raw_messages=raw_message_count,
+                        configured_messages=configured_message_count,
+                        batches=accumulator.batches,
+                        alerts=alert_count,
+                        input_tokens=accumulator.input_tokens,
+                        output_tokens=accumulator.output_tokens,
+                        cache_creation_input_tokens=accumulator.cache_creation_input_tokens,
+                        cache_read_input_tokens=accumulator.cache_read_input_tokens,
+                    ),
+                )
+            except OSError as exc:
+                LOGGER.warning("Could not write usage record to %s: %s", usage_path, exc)
 
 
 def config_path(config: dict[str, Any], key: str) -> Path:
@@ -296,6 +343,14 @@ def config_path(config: dict[str, Any], key: str) -> Path:
     value = config.get("files", {}).get(key)
     if not isinstance(value, str) or not value:
         raise ConfigError(f"Missing files.{key} in config.")
+    return Path(value).expanduser()
+
+
+def optional_config_path(config: dict[str, Any], key: str) -> Path | None:
+    """Resolve a configured local file path, returning None when unset."""
+    value = config.get("files", {}).get(key)
+    if not isinstance(value, str) or not value:
+        return None
     return Path(value).expanduser()
 
 
@@ -359,7 +414,9 @@ def write_notification_failures(path: Path, failures: list[NotificationFailure])
     )
 
 
-def classify_messages(config: dict[str, Any], messages: list[Message]) -> list[dict[str, Any]]:
+def classify_messages(
+    config: dict[str, Any], messages: list[Message], accumulator: UsageAccumulator
+) -> list[dict[str, Any]]:
     """Classify messages with Claude in configured batches and combine the returned matches."""
     if Anthropic is None:
         raise ClassificationError("Missing dependency: install requirements in .venv first.")
@@ -396,7 +453,7 @@ def classify_messages(config: dict[str, Any], messages: list[Message]) -> list[d
             batch[-1].local_time,
         )
         try:
-            batch_matches = classify_batch(client, config, topics, batch)
+            batch_matches = classify_batch(client, config, topics, batch, accumulator)
         except ClassificationError as exc:
             raise ClassificationError(
                 f"Batch {batch_index}/{len(batches)} failed "
@@ -408,7 +465,11 @@ def classify_messages(config: dict[str, Any], messages: list[Message]) -> list[d
 
 
 def classify_batch(
-    client: Any, config: dict[str, Any], topics: list[Topic], batch: list[Message]
+    client: Any,
+    config: dict[str, Any],
+    topics: list[Topic],
+    batch: list[Message],
+    accumulator: UsageAccumulator,
 ) -> list[dict[str, Any]]:
     """Send one message batch to Claude and validate the sparse match response."""
     llm_config = config.get("llm", {})
@@ -467,6 +528,8 @@ def classify_batch(
 
     if response is None:
         raise ClassificationError("Anthropic returned no response.")
+
+    accumulator.add(getattr(response, "usage", None))
 
     parsed = getattr(response, "parsed_output", None)
     if parsed is None:
