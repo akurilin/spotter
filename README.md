@@ -13,12 +13,6 @@ The Anthropic API key is loaded from `.env` as `ANTHROPIC_API_KEY`.
 
 ## Commands
 
-List available WhatsApp groups:
-
-```bash
-./.venv/bin/python wap_alerts.py list-groups
-```
-
 Run the scanner:
 
 ```bash

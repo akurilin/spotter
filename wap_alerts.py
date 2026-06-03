@@ -54,6 +54,7 @@ class Message:
 
 
 def main() -> int:
+    """Parse CLI arguments and dispatch to the requested command."""
     parser = argparse.ArgumentParser(description="Scan WhatsApp groups for topic matches.")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="Path to config JSON.")
 
@@ -62,9 +63,6 @@ def main() -> int:
     run_parser = subparsers.add_parser("run", help="Scan new group messages and classify them.")
     run_parser.add_argument("--dry-run", action="store_true", help="Do not write state, alerts, or notifications.")
     run_parser.add_argument("--limit", type=int, help="Override max_messages_per_run for this run.")
-
-    list_parser = subparsers.add_parser("list-groups", help="List WhatsApp groups visible in the local DB.")
-    list_parser.add_argument("--limit", type=int, default=100, help="Maximum groups to print.")
 
     subparsers.add_parser("test-notification", help="Send a test macOS notification.")
 
@@ -76,8 +74,6 @@ def main() -> int:
 
         if args.command == "run":
             return run_scan(config, dry_run=args.dry_run, limit_override=args.limit)
-        if args.command == "list-groups":
-            return list_groups(config, limit=args.limit)
         if args.command == "test-notification":
             send_macos_notification("WhatsApp topic match", "Notification plumbing is working.")
             return 0
@@ -88,8 +84,8 @@ def main() -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-
 def load_env_file(path: Path) -> None:
+    """Load KEY=VALUE pairs from a local .env file into the process environment."""
     if not path.exists():
         return
 
@@ -110,6 +106,7 @@ def load_env_file(path: Path) -> None:
 
 
 def load_config(path: Path) -> dict[str, Any]:
+    """Read and validate the scanner configuration JSON file."""
     if not path.exists():
         raise ConfigError(f"Missing config file: {path}")
 
@@ -129,6 +126,7 @@ def load_config(path: Path) -> dict[str, Any]:
 
 
 def get_topics(config: dict[str, Any]) -> list[Topic]:
+    """Convert configured topic dictionaries into typed Topic objects."""
     topics = []
     for item in config.get("topics", []):
         topics.append(
@@ -143,6 +141,7 @@ def get_topics(config: dict[str, Any]) -> list[Topic]:
 
 
 def require_str(data: dict[str, Any], key: str) -> str:
+    """Return a required non-empty string field or raise a configuration error."""
     value = data.get(key)
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"Expected non-empty string for topic.{key}")
@@ -150,6 +149,7 @@ def require_str(data: dict[str, Any], key: str) -> str:
 
 
 def run_scan(config: dict[str, Any], dry_run: bool, limit_override: int | None) -> int:
+    """Run one scanner pass from WhatsApp reads through classification and optional writes."""
     state_path = config_path(config, "state")
     alerts_path = config_path(config, "alerts")
     errors_path = config_path(config, "errors")
@@ -204,6 +204,7 @@ def run_scan(config: dict[str, Any], dry_run: bool, limit_override: int | None) 
 
 
 def config_path(config: dict[str, Any], key: str) -> Path:
+    """Resolve a configured local file path such as state, alerts, or errors."""
     value = config.get("files", {}).get(key)
     if not isinstance(value, str) or not value:
         raise ConfigError(f"Missing files.{key} in config.")
@@ -211,6 +212,7 @@ def config_path(config: dict[str, Any], key: str) -> Path:
 
 
 def read_json_file(path: Path, default: Any) -> Any:
+    """Read a JSON file, returning the supplied default when the file is absent."""
     if not path.exists():
         return default
     with path.open("r", encoding="utf-8") as handle:
@@ -218,6 +220,7 @@ def read_json_file(path: Path, default: Any) -> Any:
 
 
 def atomic_write_json(path: Path, data: Any) -> None:
+    """Write JSON atomically by replacing the destination after a temp-file write."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as handle:
         json.dump(data, handle, indent=2, sort_keys=True)
@@ -227,6 +230,7 @@ def atomic_write_json(path: Path, data: Any) -> None:
 
 
 def append_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+    """Append dictionaries to a JSON Lines file, one encoded row per line."""
     if not rows:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -237,6 +241,7 @@ def append_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def write_error(path: Path, error_type: str, message: str, details: dict[str, Any]) -> None:
+    """Record a structured scanner error in the configured JSONL error log."""
     append_jsonl(
         path,
         [
@@ -251,6 +256,7 @@ def write_error(path: Path, error_type: str, message: str, details: dict[str, An
 
 
 def open_whatsapp_db(config: dict[str, Any]) -> sqlite3.Connection:
+    """Open the local WhatsApp SQLite database in read-only mode."""
     db_path = Path(config["whatsapp"]["db_path"]).expanduser()
     if not db_path.exists():
         raise ConfigError(f"WhatsApp DB not found: {db_path}")
@@ -266,6 +272,7 @@ def fetch_candidate_messages(
     state: dict[str, Any],
     limit_override: int | None,
 ) -> tuple[list[Message], int | None]:
+    """Fetch new text-bearing group messages and return them with the raw high-water mark."""
     whatsapp_config = config.get("whatsapp", {})
     include_own_messages = bool(whatsapp_config.get("include_own_messages", False))
     limit = int(limit_override or whatsapp_config.get("max_messages_per_run", 2000))
@@ -326,6 +333,7 @@ def fetch_candidate_messages(
 
 
 def message_from_row(row: sqlite3.Row) -> Message:
+    """Convert one SQLite result row into a Message value object."""
     return Message(
         message_pk=int(row["message_pk"]),
         group_name=str(row["group_name"] or "Unknown group"),
@@ -338,6 +346,7 @@ def message_from_row(row: sqlite3.Row) -> Message:
 
 
 def filter_groups(messages: list[Message], group_config: dict[str, Any]) -> list[Message]:
+    """Apply configured group include and exclude filters to fetched messages."""
     include = normalize_filter_values(group_config.get("include", []))
     exclude = normalize_filter_values(group_config.get("exclude", []))
 
@@ -353,12 +362,14 @@ def filter_groups(messages: list[Message], group_config: dict[str, Any]) -> list
 
 
 def normalize_filter_values(values: Any) -> set[str]:
+    """Normalize configured group filter values for case-insensitive exact matching."""
     if not isinstance(values, list):
         return set()
     return {str(value).casefold() for value in values if str(value).strip()}
 
 
 def fetch_max_group_message_pk(conn: sqlite3.Connection) -> int | None:
+    """Return the highest WhatsApp message primary key seen in any group chat."""
     row = conn.execute(
         """
         SELECT MAX(m.Z_PK) AS max_pk
@@ -373,6 +384,7 @@ def fetch_max_group_message_pk(conn: sqlite3.Connection) -> int | None:
 
 
 def classify_messages(config: dict[str, Any], messages: list[Message]) -> list[dict[str, Any]]:
+    """Classify messages with Claude in configured batches and combine the returned matches."""
     if Anthropic is None:
         raise ClassificationError("Missing dependency: install requirements in .venv first.")
 
@@ -399,6 +411,7 @@ def classify_messages(config: dict[str, Any], messages: list[Message]) -> list[d
 
 
 def classify_batch(client: Any, config: dict[str, Any], topics: list[Topic], batch: list[Message]) -> list[dict[str, Any]]:
+    """Send one message batch to Claude and validate the sparse match response."""
     llm_config = config.get("llm", {})
     payload = {
         "topics": [topic.__dict__ for topic in topics],
@@ -446,6 +459,7 @@ def classify_batch(client: Any, config: dict[str, Any], topics: list[Topic], bat
 
 
 def system_prompt() -> str:
+    """Build the system instruction used for sparse topic classification."""
     return (
         "You classify WhatsApp group messages for topic-based user alerts. "
         "Return only messages that clearly match at least one configured topic. "
@@ -458,6 +472,7 @@ def system_prompt() -> str:
 
 
 def matches_schema() -> dict[str, Any]:
+    """Return the JSON schema requested from Claude for structured match output."""
     return {
         "type": "object",
         "additionalProperties": False,
@@ -483,6 +498,7 @@ def matches_schema() -> dict[str, Any]:
 
 
 def parse_json_response(response: Any) -> dict[str, Any]:
+    """Parse a non-structured Claude response body as JSON."""
     text_parts = []
     for block in getattr(response, "content", []):
         text = getattr(block, "text", None)
@@ -500,6 +516,7 @@ def parse_json_response(response: Any) -> dict[str, Any]:
 
 
 def validate_matches(parsed: Any, message_pks: set[int], topic_ids: set[str]) -> list[dict[str, Any]]:
+    """Validate Claude matches and drop malformed or hallucinated individual matches."""
     if not isinstance(parsed, dict) or not isinstance(parsed.get("matches"), list):
         raise ClassificationError("Anthropic response must be an object with a matches array.")
 
@@ -547,6 +564,7 @@ def build_alerts(
     matches: list[dict[str, Any]],
     existing_alert_keys: set[tuple[int, str]],
 ) -> list[dict[str, Any]]:
+    """Turn validated topic matches into alert rows after thresholds and dedupe checks."""
     message_by_pk = {message.message_pk: message for message in messages}
     topic_by_id = {topic.id: topic for topic in get_topics(config)}
     alerts = []
@@ -584,6 +602,7 @@ def build_alerts(
 
 
 def read_existing_alert_keys(path: Path) -> set[tuple[int, str]]:
+    """Read existing alert message/topic keys so repeated runs do not duplicate alerts."""
     keys = set()
     if not path.exists():
         return keys
@@ -604,6 +623,7 @@ def read_existing_alert_keys(path: Path) -> set[tuple[int, str]]:
 
 
 def notify_alerts(config: dict[str, Any], alerts: list[dict[str, Any]]) -> None:
+    """Send configured local notifications for each alert row."""
     notification_config = config.get("notifications", {})
     if not notification_config.get("macos", True):
         return
@@ -620,6 +640,7 @@ def notify_alerts(config: dict[str, Any], alerts: list[dict[str, Any]]) -> None:
 
 
 def send_macos_notification(title: str, body: str) -> None:
+    """Send a macOS notification using osascript."""
     script = """
 on run argv
     display notification (item 2 of argv) with title (item 1 of argv)
@@ -629,6 +650,7 @@ end run
 
 
 def format_notification_body(alert: dict[str, Any], max_chars: int) -> str:
+    """Format and truncate the body text shown in a macOS notification."""
     text = str(alert["text"]).replace("\n", " ")
     body = f"{alert['topic_name']} | {alert['group_name']} | {alert['sender_name']}: {text}"
     if len(body) <= max_chars:
@@ -637,43 +659,20 @@ def format_notification_body(alert: dict[str, Any], max_chars: int) -> str:
 
 
 def format_alert_line(alert: dict[str, Any]) -> str:
+    """Format one alert for readable CLI dry-run output."""
     return (
         f"[{alert['topic_name']}] {alert['group_name']} / {alert['sender_name']} "
         f"at {alert['local_time']}: {alert['text']}"
     )
 
 
-def list_groups(config: dict[str, Any], limit: int) -> int:
-    with open_whatsapp_db(config) as conn:
-        rows = conn.execute(
-            f"""
-            SELECT
-                COALESCE(NULLIF(s.ZPARTNERNAME, ''), s.ZCONTACTJID) AS group_name,
-                s.ZCONTACTJID AS group_jid,
-                COUNT(m.Z_PK) AS message_count,
-                datetime(MAX(m.ZMESSAGEDATE) + {APPLE_EPOCH_OFFSET_SECONDS}, 'unixepoch', 'localtime') AS last_message_at
-            FROM ZWACHATSESSION s
-            LEFT JOIN ZWAMESSAGE m ON m.ZCHATSESSION = s.Z_PK
-            WHERE
-                (s.ZGROUPINFO IS NOT NULL OR s.ZSESSIONTYPE IN (1, 4) OR s.ZCONTACTJID LIKE '%@g.us')
-                AND s.ZCONTACTJID NOT LIKE '%@status'
-            GROUP BY s.Z_PK
-            ORDER BY MAX(m.ZMESSAGEDATE) DESC
-            LIMIT ?
-            """,
-            [limit],
-        ).fetchall()
-
-    for row in rows:
-        print(f"{row['group_name']} | {row['group_jid']} | {row['message_count']} messages | last {row['last_message_at']}")
-    return 0
-
-
 def chunks(items: list[Message], size: int) -> list[list[Message]]:
+    """Split a list of messages into fixed-size batches."""
     return [items[index : index + size] for index in range(0, len(items), size)]
 
 
 def now_iso() -> str:
+    """Return the current local timestamp in ISO-8601 format."""
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
