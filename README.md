@@ -120,7 +120,7 @@ The default log directory is `~/Library/Logs/waparser`, which matches the usual 
 
 The scanner logs operational progress such as cursor state, group/message counts, Claude model, batch progress, match counts, alert counts, and notification backend activity. Routine logs avoid message bodies; dry-run alert output still prints matching messages to the terminal for review.
 
-Notification delivery is best-effort. If macOS or Pushover delivery fails, the scanner logs the failure and writes a structured `notification_failed` entry to `errors.jsonl` without blocking cursor advancement.
+Notification delivery is best-effort. If macOS or Pushover delivery fails, the scanner logs the failure and writes a structured `notification_failed` entry to `errors.jsonl` without blocking cursor advancement. Notification text includes the resolved sender name and the local time the alert was created.
 
 ## LaunchAgent
 
@@ -137,6 +137,5 @@ Do not install it with global Python. Use:
 
 # WIP / TODO
 
-- Fault tolerance / resumability of initial parsing
+- Fault tolerance / resumability of initial parsing to save on tokens
 - Not overwhelm users with the initial matches if there are many of them
-- Resolution of sender names
