@@ -29,14 +29,13 @@ cp config.example.json config.json
 
 `config.json` is gitignored, so your topics, LaunchAgent label, and other personal settings stay local.
 
-The Anthropic API key is loaded from `.env` as `ANTHROPIC_API_KEY`.
-
-Pushover notifications are enabled by default. Add these to `.env`:
+Copy the environment template and fill in your secrets:
 
 ```bash
-PUSHOVER_APP_TOKEN=...
-PUSHOVER_USER_KEY=...
+cp .env.example .env
 ```
+
+`.env` is gitignored. `ANTHROPIC_API_KEY` is required. `PUSHOVER_APP_TOKEN` and `PUSHOVER_USER_KEY` are only needed when `notifications.pushover` is enabled in `config.json`.
 
 The Pushover application icon used for this notifier is tracked at `assets/icon.png`. Pushover shows the icon configured on the Pushover application, so this asset is kept here as the source image for that app setting.
 
