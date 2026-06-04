@@ -63,6 +63,7 @@ def main() -> int:
     subparsers.add_parser("install-agent", help="Install or update the per-user macOS LaunchAgent.")
     subparsers.add_parser("uninstall-agent", help="Unload and remove the per-user macOS LaunchAgent.")
     subparsers.add_parser("agent-status", help="Show the current LaunchAgent status.")
+    subparsers.add_parser("tui", help="Open the terminal UI.")
 
     args = parser.parse_args()
 
@@ -84,6 +85,10 @@ def main() -> int:
             return uninstall_launch_agent(config)
         if args.command == "agent-status":
             return show_launch_agent_status(config)
+        if args.command == "tui":
+            from spotter.tui import run_tui
+
+            return run_tui(config)
 
         parser.error(f"Unknown command: {args.command}")
         return 2

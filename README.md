@@ -33,6 +33,7 @@ spotter is a single-process Python CLI split into a thin entry point plus a smal
 | `spotter/whatsapp_db.py`        | Read-only access to the WhatsApp `ChatStorage.sqlite`, group filtering, cursor reads  |
 | `spotter/notifications.py`      | macOS Notification Center (`osascript`) and Pushover HTTP delivery                    |
 | `spotter/launchagent.py`        | Generate, install, query, and remove the LaunchAgent plist                            |
+| `spotter/tui.py`                | Textual terminal UI for read-only run and alert history inspection                    |
 | `spotter/usage.py`              | Per-run Claude token-usage records appended to `usage.jsonl`                          |
 | `spotter/errors.py`             | Structured error records for `errors.jsonl`                                           |
 | `spotter/paths.py`              | Path expansion and project-root resolution                                            |
@@ -136,6 +137,10 @@ All commands run through the project's virtualenv Python.
 
 # Fire a test notification through every enabled backend.
 ./.venv/bin/python spotter.py test-notification
+
+# Open the read-only terminal UI for run and alert history.
+# Inside the TUI, press 1 for Runs, 2 for Alerts, F5 to refresh, and q to quit.
+./.venv/bin/python spotter.py tui
 
 # Install / inspect / remove the macOS LaunchAgent.
 ./.venv/bin/python spotter.py install-agent
