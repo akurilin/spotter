@@ -64,7 +64,7 @@ The Anthropic API key is the only secret leaving the machine. WhatsApp database 
 - **macOS 14 or later** with the [WhatsApp desktop app](https://www.whatsapp.com/download) installed and signed in — that's what populates the `ChatStorage.sqlite` database spotter reads. iOS / iPad / web won't work.
 - **Python 3.12+** — the code uses `from datetime import UTC` and PEP 604 union syntax.
 - **An [Anthropic API key](https://console.anthropic.com)** — classification is hard-coded to the Anthropic SDK; there is no provider abstraction. Usage is per-batch, capped by `max_messages_per_run`, and recorded in `usage.jsonl` so you can audit cost.
-- **Read access to the WhatsApp Group Container** — granted automatically when you install WhatsApp under your user account. spotter opens the file with SQLite URI `mode=ro` and never writes to it.
+- **Full Disk Access for the Python binary that runs spotter** — macOS gates the WhatsApp Group Container behind TCC, so without this grant the read-only `sqlite3.connect` will fail with "unable to open database file" even though the path is correct and your user owns it. Add `.venv/bin/python3` (or whatever interpreter you use, including the one launchd invokes) under **System Settings → Privacy & Security → Full Disk Access**. spotter opens the file with SQLite URI `mode=ro` and never writes to it.
 
 ### Nice-to-haves
 
@@ -103,17 +103,18 @@ Now work through the blanks:
 
 1. **Anthropic key.** Mint a key at [console.anthropic.com](https://console.anthropic.com) and paste it into `ANTHROPIC_API_KEY` in `.env`.
 2. **Topics.** Edit the `topics` array in `config.json`. Each entry is `{ id, name, description, threshold }`. The `description` is what the classifier sees — be explicit about both the intent you care about *and* the near-misses you want excluded. Precision in the description directly reduces false positives.
-3. **Pushover (optional).** If you want phone pushes, create a Pushover account + application, then paste `PUSHOVER_APP_TOKEN` and `PUSHOVER_USER_KEY` into `.env` and leave `notifications.pushover` set to `true` in `config.json`. Otherwise flip it to `false`.
-4. **Smoke test.** Run a dry run against a small slice of messages to validate your topic descriptions:
+3. **Grant Full Disk Access to the virtualenv Python.** macOS will otherwise block the read of `ChatStorage.sqlite` with "unable to open database file". Open **System Settings → Privacy & Security → Full Disk Access**, click **+**, press <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>.</kbd> to reveal hidden files, navigate to this repo's `.venv/bin/`, and add `python3` (the symlink resolves to the real interpreter). If you later install the LaunchAgent, the same binary is what launchd runs, so this single grant covers both interactive and scheduled runs.
+4. **Pushover (optional).** If you want phone pushes, create a Pushover account + application, then paste `PUSHOVER_APP_TOKEN` and `PUSHOVER_USER_KEY` into `.env` and leave `notifications.pushover` set to `true` in `config.json`. Otherwise flip it to `false`.
+5. **Smoke test.** Run a dry run against a small slice of messages to validate your topic descriptions:
    ```bash
    ./.venv/bin/python spotter.py run --dry-run --limit 100
    ```
    Matches will print to the terminal without writing state, alerts, or notifications.
-5. **First real run.** Drop `--dry-run` to advance the cursor and fire notifications:
+6. **First real run.** Drop `--dry-run` to advance the cursor and fire notifications:
    ```bash
    ./.venv/bin/python spotter.py run
    ```
-6. **Install the LaunchAgent.** Once you trust the topic config, schedule it:
+7. **Install the LaunchAgent.** Once you trust the topic config, schedule it:
    ```bash
    ./.venv/bin/python spotter.py install-agent
    ```
