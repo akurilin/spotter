@@ -1,16 +1,26 @@
-"""Terminal UI for inspecting spotter run and alert history."""
+"""Terminal UI for spotter history and LaunchAgent controls."""
 
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any, ClassVar
 
+from textual import events
 from textual.app import App, ComposeResult
 from textual.widgets import DataTable, Footer, Header, Sparkline, Static, TabbedContent, TabPane
 
 from spotter.errors import ConfigError
+from spotter.launchagent import (
+    LaunchAgentStatus,
+    inspect_launch_agent,
+    install_launch_agent,
+    status_problem_details,
+    uninstall_launch_agent,
+)
+from spotter.preflight import WhatsAppDatabaseAccess, check_whatsapp_database_access
 
 type JsonObject = dict[str, Any]
 
@@ -35,15 +45,21 @@ ALERT_COLUMNS: tuple[str, ...] = (
     "Message Time",
     "Text",
 )
+AGENT_COLUMNS: tuple[str, ...] = (
+    "Check",
+    "Status",
+    "Details",
+)
 RUN_SPARKLINE_LIMIT = 50
 
 
 class SpotterTui(App):
-    """Textual application for read-only spotter log inspection."""
+    """Textual application for spotter history and LaunchAgent operations."""
 
     BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
         ("1", "show_runs", "1 Runs"),
         ("2", "show_alerts", "2 Alerts"),
+        ("3", "show_agent", "3 Agent"),
         ("f5", "refresh_data", "Refresh"),
         ("q", "quit", "Quit"),
     ]
@@ -65,11 +81,25 @@ class SpotterTui(App):
         height: 1;
         margin: 0 1 1 1;
     }
+
+    #agent-status {
+        height: 1;
+        padding: 0 1;
+        text-style: bold;
+    }
+
+    #agent-shortcuts {
+        height: 1;
+        padding: 0 1;
+        color: $text-muted;
+    }
     """
 
-    def __init__(self, config: dict[str, Any]) -> None:
+    def __init__(self, config: dict[str, Any], config_path: Path) -> None:
         """Initialize the TUI with configured read-only log paths."""
         super().__init__()
+        self.config = config
+        self.config_path = config_path
         self.title = "spotter"
         self.usage_path = optional_file_path(config, "usage")
         self.alerts_path = required_file_path(config, "alerts")
@@ -84,12 +114,19 @@ class SpotterTui(App):
                 yield DataTable(id="runs-table", cursor_type="row")
             with TabPane("2 Alerts", id="alerts"):
                 yield DataTable(id="alerts-table", cursor_type="row")
+            with TabPane("3 Agent", id="agent"):
+                yield Static(id="agent-status")
+                yield Static(
+                    "Keys: e enable automatic runs | d disable automatic runs | F5 refresh", id="agent-shortcuts"
+                )
+                yield DataTable(id="agent-table", cursor_type="row")
         yield Footer()
 
     def on_mount(self) -> None:
         """Load both tables once the tabbed layout has mounted."""
         self.refresh_runs_table()
         self.refresh_alerts_table()
+        self.refresh_agent_panel()
         self.focus_runs_table()
 
     def action_show_runs(self) -> None:
@@ -102,6 +139,11 @@ class SpotterTui(App):
         self.query_one("#view-tabs", TabbedContent).active = "alerts"
         self.call_after_refresh(self.focus_alerts_table)
 
+    def action_show_agent(self) -> None:
+        """Switch to the LaunchAgent status and controls tab."""
+        self.query_one("#view-tabs", TabbedContent).active = "agent"
+        self.call_after_refresh(self.focus_agent_table)
+
     def action_refresh_data(self) -> None:
         """Refresh the currently active table from disk."""
         active_tab = self.query_one("#view-tabs", TabbedContent).active
@@ -109,8 +151,24 @@ class SpotterTui(App):
             self.refresh_alerts_table()
             self.focus_alerts_table()
             return
+        if active_tab == "agent":
+            self.refresh_agent_panel()
+            self.focus_agent_table()
+            return
         self.refresh_runs_table()
         self.focus_runs_table()
+
+    def on_key(self, event: events.Key) -> None:
+        """Handle key commands that are local to the active tab."""
+        if self.query_one("#view-tabs", TabbedContent).active != "agent":
+            return
+        if event.key == "e":
+            event.stop()
+            self.enable_launch_agent()
+            return
+        if event.key == "d":
+            event.stop()
+            self.disable_launch_agent()
 
     def focus_runs_table(self) -> None:
         """Focus the run table and place its cursor on the first row."""
@@ -119,6 +177,10 @@ class SpotterTui(App):
     def focus_alerts_table(self) -> None:
         """Focus the alert table and place its cursor on the first row."""
         focus_first_table_row(self.query_one("#alerts-table", DataTable))
+
+    def focus_agent_table(self) -> None:
+        """Focus the agent status table and place its cursor on the first row."""
+        focus_first_table_row(self.query_one("#agent-table", DataTable))
 
     def refresh_runs_table(self) -> None:
         """Reload usage records from disk into the runs table."""
@@ -174,10 +236,50 @@ class SpotterTui(App):
                 shorten(row.get("text"), 96),
             )
 
+    def refresh_agent_panel(self, message: str | None = None) -> None:
+        """Reload LaunchAgent and database-access status into the Agent tab."""
+        table = self.query_one("#agent-table", DataTable)
+        reset_table(table, AGENT_COLUMNS)
 
-def run_tui(config: dict[str, Any]) -> int:
+        try:
+            status = inspect_launch_agent(self.config, self.config_path)
+            database_access = check_whatsapp_database_access(self.config)
+        except (ConfigError, OSError, RuntimeError) as exc:
+            self.query_one("#agent-status", Static).update(message or f"Automatic runs: UNKNOWN | {exc}")
+            table.add_row("Status", "error", str(exc))
+            return
+
+        self.query_one("#agent-status", Static).update(format_agent_summary(status, database_access, message))
+
+        for check, status_text, details in agent_status_rows(status, database_access):
+            table.add_row(check, status_text, details)
+
+    def enable_launch_agent(self) -> None:
+        """Install or update the LaunchAgent from the current config."""
+        try:
+            install_launch_agent(self.config, self.config_path, emit=False)
+        except (ConfigError, OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+            self.refresh_agent_panel(f"Enable failed: {exc}")
+            self.focus_agent_table()
+            return
+        self.refresh_agent_panel("Automatic runs enabled.")
+        self.focus_agent_table()
+
+    def disable_launch_agent(self) -> None:
+        """Unload and remove the LaunchAgent."""
+        try:
+            uninstall_launch_agent(self.config, emit=False)
+        except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+            self.refresh_agent_panel(f"Disable failed: {exc}")
+            self.focus_agent_table()
+            return
+        self.refresh_agent_panel("Automatic runs disabled.")
+        self.focus_agent_table()
+
+
+def run_tui(config: dict[str, Any], config_path: Path) -> int:
     """Start the terminal UI and block until the user exits it."""
-    SpotterTui(config).run()
+    SpotterTui(config, config_path).run()
     return 0
 
 
@@ -298,6 +400,80 @@ def format_runs_summary(alert_counts: list[float]) -> str:
         f"Alerts per run: last {len(displayed_counts)} runs | "
         f"total {total_alerts:,} | avg {displayed_average:.1f} | max {displayed_max:,}"
     )
+
+
+def format_agent_summary(
+    status: LaunchAgentStatus, database_access: WhatsAppDatabaseAccess, message: str | None = None
+) -> str:
+    """Return an at-a-glance LaunchAgent status line for the Agent tab."""
+    if status.is_configured_correctly:
+        agent_state = "ENABLED"
+    elif status.plist_exists or status.loaded:
+        agent_state = "NEEDS ATTENTION"
+    else:
+        agent_state = "DISABLED"
+
+    database_state = "OK" if database_access.ok else "BLOCKED"
+    summary = f"Automatic runs: {agent_state} | WhatsApp DB access: {database_state}"
+    if message:
+        return f"{summary} | {message}"
+    return summary
+
+
+def agent_status_rows(status: LaunchAgentStatus, database_access: WhatsAppDatabaseAccess) -> list[tuple[str, str, str]]:
+    """Build display rows for LaunchAgent and database-access status."""
+    rows = [
+        (
+            "Configured correctly",
+            yes_no(status.is_configured_correctly),
+            "Loaded in launchd and installed plist matches the current config.",
+        ),
+        ("Loaded", yes_no(status.loaded), status.loaded_error or status.service_name),
+        ("Plist installed", yes_no(status.plist_exists), str(status.plist_path)),
+        ("Plist loadable", yes_no(status.plist_loadable), format_plist_load_detail(status)),
+        ("Matches current config", status_label(status.plist_matches_config), format_plist_match_detail(status)),
+        ("Can install from current Python", yes_no(status.can_install), status.expected_plist_error or "Ready."),
+        ("Current Python", "path", str(status.current_python_path)),
+        ("Installed Python", "path", status.installed_python_path or "Not installed."),
+        ("Installed config", "path", status.installed_config_path or "Not installed."),
+        ("App log", "path", str(status.app_log_path)),
+        ("WhatsApp DB access", yes_no(database_access.ok), database_access.detail),
+        ("WhatsApp DB path", "path", str(database_access.db_path or "unknown")),
+    ]
+
+    for detail in status_problem_details(status):
+        rows.append(("Attention", "!", detail))
+    return rows
+
+
+def format_plist_load_detail(status: LaunchAgentStatus) -> str:
+    """Return a clear plist loadability detail for the Agent tab."""
+    if not status.plist_exists:
+        return "No plist installed."
+    return status.plist_error or "Valid property list."
+
+
+def format_plist_match_detail(status: LaunchAgentStatus) -> str:
+    """Return a clear plist/config comparison detail for the Agent tab."""
+    if not status.plist_exists:
+        return "Enable automatic runs to install the generated plist."
+    if status.plist_matches_config is None:
+        return "Cannot compare until the plist and expected config are both readable."
+    if status.plist_matches_config:
+        return "Installed plist matches the current config."
+    return "Re-enable automatic runs to update the installed plist."
+
+
+def yes_no(value: bool) -> str:
+    """Format a boolean for compact table display."""
+    return "yes" if value else "no"
+
+
+def status_label(value: bool | None) -> str:
+    """Format a tri-state status for compact table display."""
+    if value is None:
+        return "unknown"
+    return yes_no(value)
 
 
 def format_confidence(value: Any) -> str:

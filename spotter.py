@@ -84,11 +84,11 @@ def main() -> int:
         if args.command == "uninstall-agent":
             return uninstall_launch_agent(config)
         if args.command == "agent-status":
-            return show_launch_agent_status(config)
+            return show_launch_agent_status(config, config_path)
         if args.command == "tui":
             from spotter.tui import run_tui
 
-            return run_tui(config)
+            return run_tui(config, config_path)
 
         parser.error(f"Unknown command: {args.command}")
         return 2

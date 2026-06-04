@@ -33,7 +33,7 @@ spotter is a single-process Python CLI split into a thin entry point plus a smal
 | `spotter/whatsapp_db.py`        | Read-only access to the WhatsApp `ChatStorage.sqlite`, group filtering, cursor reads  |
 | `spotter/notifications.py`      | macOS Notification Center (`osascript`) and Pushover HTTP delivery                    |
 | `spotter/launchagent.py`        | Generate, install, query, and remove the LaunchAgent plist                            |
-| `spotter/tui.py`                | Textual terminal UI for read-only run and alert history inspection                    |
+| `spotter/tui.py`                | Textual terminal UI for run history, alert history, and LaunchAgent controls          |
 | `spotter/usage.py`              | Per-run Claude token-usage records appended to `usage.jsonl`                          |
 | `spotter/errors.py`             | Structured error records for `errors.jsonl`                                           |
 | `spotter/paths.py`              | Path expansion and project-root resolution                                            |
@@ -138,8 +138,9 @@ All commands run through the project's virtualenv Python.
 # Fire a test notification through every enabled backend.
 ./.venv/bin/python spotter.py test-notification
 
-# Open the read-only terminal UI for run and alert history.
-# Inside the TUI, press 1 for Runs, 2 for Alerts, F5 to refresh, and q to quit.
+# Open the terminal UI for run history, alert history, and LaunchAgent controls.
+# Inside the TUI, press 1 for Runs, 2 for Alerts, 3 for Agent, e to enable scheduled runs,
+# d to disable scheduled runs, F5 to refresh, and q to quit.
 ./.venv/bin/python spotter.py tui
 
 # Install / inspect / remove the macOS LaunchAgent.
@@ -203,6 +204,8 @@ When an expected alert never arrived, the canonical sequence is: check `spotter.
 The `install-agent` command writes a generated plist to `~/Library/LaunchAgents/<launch_agent.label>.plist` using the label configured in `config.json` (default `com.example.spotter`). It pins the background job to the same Python virtualenv used for installation by recording `sys.executable` in the plist.
 
 The generated LaunchAgent uses this project directory as `WorkingDirectory`, records the configured interval and run-at-load behavior from `config.json`, and writes stdout/stderr logs to the configured log directory.
+
+The `agent-status` command and the TUI's **3 Agent** tab report whether the plist exists, whether launchd has loaded it, whether it still matches the current config, which Python/config paths are installed, and whether the current Python process can open the WhatsApp database read-only. A database access failure usually means Full Disk Access has not been granted to the local virtualenv Python.
 
 Do not install it with global Python. Use:
 
