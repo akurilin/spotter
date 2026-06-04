@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from textual.app import App, ComposeResult
-from textual.widgets import DataTable, Footer, Header, TabbedContent, TabPane
+from textual.widgets import DataTable, Footer, Header, Sparkline, Static, TabbedContent, TabPane
 
 from spotter.errors import ConfigError
 
@@ -35,6 +35,7 @@ ALERT_COLUMNS: tuple[str, ...] = (
     "Message Time",
     "Text",
 )
+RUN_SPARKLINE_LIMIT = 50
 
 
 class SpotterTui(App):
@@ -54,6 +55,16 @@ class SpotterTui(App):
     DataTable {
         height: 1fr;
     }
+
+    #runs-summary {
+        height: 1;
+        padding: 0 1;
+    }
+
+    #runs-sparkline {
+        height: 1;
+        margin: 0 1 1 1;
+    }
     """
 
     def __init__(self, config: dict[str, Any]) -> None:
@@ -68,6 +79,8 @@ class SpotterTui(App):
         yield Header()
         with TabbedContent(initial="runs", id="view-tabs"):
             with TabPane("1 Runs", id="runs"):
+                yield Static(id="runs-summary")
+                yield Sparkline(id="runs-sparkline")
                 yield DataTable(id="runs-table", cursor_type="row")
             with TabPane("2 Alerts", id="alerts"):
                 yield DataTable(id="alerts-table", cursor_type="row")
@@ -113,6 +126,7 @@ class SpotterTui(App):
         reset_table(table, RUN_COLUMNS)
 
         rows = read_jsonl_objects(self.usage_path)
+        self.refresh_runs_sparkline(rows)
         if not rows:
             add_empty_row(table, len(RUN_COLUMNS), "No run records found.")
             return
@@ -130,6 +144,14 @@ class SpotterTui(App):
                 format_int(row.get("output_tokens")),
                 shorten(row.get("model"), 32),
             )
+
+    def refresh_runs_sparkline(self, rows: list[JsonObject]) -> None:
+        """Update the alerts-per-run sparkline and summary from usage records."""
+        summary = self.query_one("#runs-summary", Static)
+        sparkline = self.query_one("#runs-sparkline", Sparkline)
+        alert_counts = alert_counts_by_run(rows)
+        sparkline.data = alert_counts[-RUN_SPARKLINE_LIMIT:]
+        summary.update(format_runs_summary(alert_counts))
 
     def refresh_alerts_table(self) -> None:
         """Reload alert records from disk into the alerts table."""
@@ -245,6 +267,37 @@ def format_int(value: Any) -> str:
         return f"{int(value):,}"
     except (TypeError, ValueError):
         return text_value(value)
+
+
+def int_value(value: Any) -> int:
+    """Parse an integer-like JSON value, defaulting malformed values to zero."""
+    if isinstance(value, bool) or value is None:
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def alert_counts_by_run(rows: list[JsonObject]) -> list[float]:
+    """Return alert counts in chronological run order for sparkline rendering."""
+    return [float(int_value(row.get("alerts"))) for row in rows]
+
+
+def format_runs_summary(alert_counts: list[float]) -> str:
+    """Format aggregate alert statistics for the runs sparkline."""
+    if not alert_counts:
+        return "Alerts per run: no run records"
+
+    displayed_counts = alert_counts[-RUN_SPARKLINE_LIMIT:]
+    total_alerts = int(sum(alert_counts))
+    displayed_total = int(sum(displayed_counts))
+    displayed_average = displayed_total / len(displayed_counts)
+    displayed_max = int(max(displayed_counts))
+    return (
+        f"Alerts per run: last {len(displayed_counts)} runs | "
+        f"total {total_alerts:,} | avg {displayed_average:.1f} | max {displayed_max:,}"
+    )
 
 
 def format_confidence(value: Any) -> str:
