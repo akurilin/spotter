@@ -176,9 +176,22 @@ Notification delivery is best-effort. If macOS or Pushover delivery fails, the s
 
 ## Logging
 
-The default log directory is `~/Library/Logs/spotter`, which matches the usual macOS convention for per-user application logs. The path and log level are controlled by the `logging` section in `config.json`.
+The default log directory is `~/Library/Logs/spotter`, which matches the usual macOS convention for per-user application logs. The directory and log level are controlled by the `logging` section in `config.json`; the file paths for `state`, `alerts`, `errors`, and `usage` are independently configurable under `files`.
 
 The scanner logs operational progress such as cursor state, group/message counts, Claude model, batch progress, match counts, alert counts, and notification backend activity. Routine logs avoid message bodies; dry-run alert output still prints matching messages to the terminal for review.
+
+Every artifact spotter writes — read this table first when debugging:
+
+| File                                                          | Purpose                                                                                                                                          | When to read it                                                                                  |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
+| `~/Library/Logs/spotter/spotter.log`                          | Main scanner log: config load, cursor state, group/message counts, Claude model, batch progress, match counts, notification backend activity.    | Default "what happened on the last run".                                                         |
+| `~/Library/Logs/spotter/alerts.jsonl`                         | Append-only history of every alert spotter has surfaced, one JSON object per line. Used for dedupe across runs.                                  | Auditing past matches; sanity-checking that an expected alert actually fired.                    |
+| `~/Library/Logs/spotter/errors.jsonl`                         | Structured error records (`notification_failed`, classifier failures, schema-validation failures), one JSON object per line.                     | Finding what failed silently — notification delivery failures don't block cursor advance.        |
+| `~/Library/Logs/spotter/usage.jsonl`                          | One JSON line per successful run with Claude input/output token usage and model name.                                                            | Auditing API spend; spotting runs that classified more batches than expected.                    |
+| `~/Library/Logs/spotter/launchd.out.log` / `launchd.err.log`  | stdout / stderr captured by launchd for scheduled runs (`StandardOutPath` / `StandardErrorPath` in the generated plist).                         | Scheduled runs that don't even reach `spotter.log` — import errors, TCC denials, missing `.env`. |
+| `~/Library/Application Support/spotter/state.json`            | The universal scan cursor (last processed WhatsApp message). Atomic, written only after every batch in a run succeeds.                           | Manually resetting or backfilling. Delete the file to re-trigger the initial `initial_backfill_days` backfill on the next run. |
+
+When an expected alert never arrived, the canonical sequence is: check `spotter.log` for the run, then `errors.jsonl` for a `notification_failed` record, then (for scheduled runs) `launchd.err.log` if the run never logged anything at all.
 
 ## LaunchAgent
 
