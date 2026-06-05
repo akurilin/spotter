@@ -4,6 +4,7 @@
 [![macOS](https://img.shields.io/badge/macOS-14%2B-000000?logo=apple&logoColor=white)](https://www.apple.com/macos/)
 [![Anthropic API](https://img.shields.io/badge/Anthropic-Claude-D97757?logo=anthropic&logoColor=white)](https://docs.anthropic.com)
 [![lint: ruff](https://img.shields.io/badge/lint-ruff-D7FF64.svg)](https://docs.astral.sh/ruff/)
+[![Tests](https://github.com/akurilin/spotter/actions/workflows/test.yml/badge.svg)](https://github.com/akurilin/spotter/actions/workflows/test.yml)
 
 `spotter` is a local, single-user WhatsApp group scanner that pings you only when a message matches a topic you actually care about. It reads the macOS WhatsApp desktop SQLite database in read-only mode, sends batches of new group messages to Claude for natural-language classification, writes matches to `alerts.jsonl`, and delivers notifications via macOS Notification Center and/or [Pushover](https://pushover.net/) for push to your phone.
 

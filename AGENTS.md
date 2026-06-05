@@ -8,6 +8,7 @@
 - Treat the TUI as a keyboard-first command-line interface. Do not add mouse-oriented controls such as clickable buttons for primary actions; expose actions through documented key bindings and make current status visible at a glance in text. Shortcuts for page-specific actions must only be active and visible on the relevant page.
 - Before committing Python changes, run Ruff on the project with `./.venv/bin/python -m ruff format .` and `./.venv/bin/python -m ruff check .`.
 - Run Ruff / formatting / linting only before committing
+- Avoid including any information about real WhatsApp groups, their users and their messages' contents when writing test cases and evals
 
 # Project Files
 
