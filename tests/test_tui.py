@@ -44,6 +44,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual("alerts", tabs.active)
                 self.assertEqual("Newest alert", alerts_table.get_row_at(0)[1])
                 self.assertIn("Date order: newest first", str(app.query_one("#alerts-shortcuts", Static).render()))
+                self.assertIn("Auto-refresh: 3s", str(app.query_one("#alerts-shortcuts", Static).render()))
 
                 await pilot.press("s")
                 self.assertEqual("Oldest alert", alerts_table.get_row_at(0)[1])
@@ -60,6 +61,50 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("1")
                 self.assertEqual("alerts", tabs.active)
                 self.assertEqual("Oldest alert", alerts_table.get_row_at(0)[1])
+
+    async def test_history_auto_refreshes_only_when_source_files_change(self):
+        temp_dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        alerts_path = temp_dir / "alerts.jsonl"
+        usage_path = temp_dir / "usage.jsonl"
+        alerts = [
+            {"created_at": "2026-01-01T00:00:00+00:00", "topic_name": "Initial alert"},
+            {"created_at": "2025-12-01T00:00:00+00:00", "topic_name": "Older alert"},
+        ]
+        runs = [{"started_at": "2026-01-01T00:00:00+00:00", "status": "initial"}]
+        write_jsonl(alerts_path, alerts)
+        write_jsonl(usage_path, runs)
+        app = SpotterTui(
+            {"files": {"alerts": str(alerts_path), "usage": str(usage_path)}},
+            temp_dir / "config.json",
+        )
+
+        with patch.object(app, "refresh_agent_panel"):
+            async with app.run_test():
+                alerts_table = app.query_one("#alerts-table", DataTable)
+                runs_table = app.query_one("#runs-table", DataTable)
+                alerts_table.move_cursor(row=1, animate=False)
+                with (
+                    patch.object(app, "refresh_alerts_table", wraps=app.refresh_alerts_table) as refresh_alerts,
+                    patch.object(app, "refresh_runs_table", wraps=app.refresh_runs_table) as refresh_runs,
+                ):
+                    app.refresh_changed_history()
+                    refresh_alerts.assert_not_called()
+                    refresh_runs.assert_not_called()
+
+                    alerts.append({"created_at": "2026-02-01T00:00:00+00:00", "topic_name": "New alert"})
+                    write_jsonl(alerts_path, alerts)
+                    app.refresh_changed_history()
+                    refresh_alerts.assert_called_once()
+                    refresh_runs.assert_not_called()
+                    self.assertEqual("New alert", alerts_table.get_row_at(0)[1])
+                    self.assertEqual(1, alerts_table.cursor_row)
+                    self.assertIs(alerts_table, app.focused)
+
+                    runs.append({"started_at": "2026-02-01T00:00:00+00:00", "status": "new"})
+                    write_jsonl(usage_path, runs)
+                    app.refresh_changed_history()
+                    refresh_runs.assert_called_once()
+                    self.assertEqual("new", runs_table.get_row_at(0)[1])
 
     def test_sort_rows_by_timestamp_leaves_malformed_dates_last(self):
         rows = [

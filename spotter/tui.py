@@ -23,6 +23,8 @@ from spotter.launchagent import (
 from spotter.preflight import WhatsAppDatabaseAccess, check_whatsapp_database_access
 
 type JsonObject = dict[str, Any]
+type FileSignature = tuple[int, int] | None
+type TableViewState = tuple[int, float, float]
 
 RUN_COLUMNS: tuple[str, ...] = (
     "Started",
@@ -50,6 +52,7 @@ AGENT_COLUMNS: tuple[str, ...] = (
     "Details",
 )
 RUN_SPARKLINE_LIMIT = 50
+HISTORY_REFRESH_INTERVAL_SECONDS = 3
 
 
 class SpotterTui(App):
@@ -110,6 +113,8 @@ class SpotterTui(App):
         self.alerts_path = required_file_path(config, "alerts")
         self.runs_newest_first = True
         self.alerts_newest_first = True
+        self.runs_file_signature: FileSignature = None
+        self.alerts_file_signature: FileSignature = None
 
     def compose(self) -> ComposeResult:
         """Build the app layout with numbered top-level tabs."""
@@ -137,6 +142,7 @@ class SpotterTui(App):
         self.refresh_alerts_table()
         self.refresh_agent_panel()
         self.focus_alerts_table()
+        self.set_interval(HISTORY_REFRESH_INTERVAL_SECONDS, self.refresh_changed_history)
 
     def action_show_runs(self) -> None:
         """Switch to the run history tab."""
@@ -204,8 +210,26 @@ class SpotterTui(App):
         """Focus the agent status table and place its cursor on the first row."""
         focus_first_table_row(self.query_one("#agent-table", DataTable))
 
+    def refresh_changed_history(self) -> None:
+        """Reload history widgets only when their source files have changed."""
+        runs_changed = file_signature(self.usage_path) != self.runs_file_signature
+        alerts_changed = file_signature(self.alerts_path) != self.alerts_file_signature
+        if not runs_changed and not alerts_changed:
+            return
+
+        runs_view = capture_table_view(self.query_one("#runs-table", DataTable)) if runs_changed else None
+        alerts_view = capture_table_view(self.query_one("#alerts-table", DataTable)) if alerts_changed else None
+        with self.batch_update():
+            if runs_changed:
+                self.refresh_runs_table()
+                restore_table_view(self.query_one("#runs-table", DataTable), runs_view)
+            if alerts_changed:
+                self.refresh_alerts_table()
+                restore_table_view(self.query_one("#alerts-table", DataTable), alerts_view)
+
     def refresh_runs_table(self) -> None:
         """Reload usage records from disk into the runs table."""
+        self.runs_file_signature = file_signature(self.usage_path)
         table = self.query_one("#runs-table", DataTable)
         reset_table(table, RUN_COLUMNS)
         self.query_one("#runs-shortcuts", Static).update(format_sort_shortcuts(self.runs_newest_first))
@@ -239,6 +263,7 @@ class SpotterTui(App):
 
     def refresh_alerts_table(self) -> None:
         """Reload alert records from disk into the alerts table."""
+        self.alerts_file_signature = file_signature(self.alerts_path)
         table = self.query_one("#alerts-table", DataTable)
         reset_table(table, ALERT_COLUMNS)
         self.query_one("#alerts-shortcuts", Static).update(format_sort_shortcuts(self.alerts_newest_first))
@@ -323,6 +348,20 @@ def focus_first_table_row(table: DataTable) -> None:
     table.move_cursor(row=0, column=0, animate=False, scroll=True)
 
 
+def capture_table_view(table: DataTable) -> TableViewState:
+    """Capture cursor and scroll positions before an automatic table update."""
+    return table.cursor_row, table.scroll_x, table.scroll_y
+
+
+def restore_table_view(table: DataTable, view: TableViewState | None) -> None:
+    """Restore cursor and scroll positions without changing keyboard focus."""
+    if view is None:
+        return
+    cursor_row, scroll_x, scroll_y = view
+    table.move_cursor(row=min(cursor_row, max(table.row_count - 1, 0)), animate=False, scroll=False)
+    table.scroll_to(x=scroll_x, y=scroll_y, animate=False, force=True)
+
+
 def read_jsonl_objects(path: Path | None) -> list[JsonObject]:
     """Read JSON object rows from a JSON Lines file, skipping malformed rows."""
     if path is None or not path.exists():
@@ -340,6 +379,17 @@ def read_jsonl_objects(path: Path | None) -> list[JsonObject]:
             if isinstance(row, dict):
                 rows.append(row)
     return rows
+
+
+def file_signature(path: Path | None) -> FileSignature:
+    """Return metadata sufficient to detect ordinary file appends and replacements."""
+    if path is None:
+        return None
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return stat.st_mtime_ns, stat.st_size
 
 
 def sort_rows_by_timestamp(rows: list[JsonObject], field: str, newest_first: bool) -> list[JsonObject]:
@@ -372,7 +422,10 @@ def parse_timestamp(value: Any) -> datetime | None:
 def format_sort_shortcuts(newest_first: bool) -> str:
     """Return the page-local date-order status and shortcuts."""
     order = "newest first" if newest_first else "oldest first"
-    return f"Date order: {order} | Keys: s reverse date order | F5 refresh"
+    return (
+        f"Date order: {order} | Auto-refresh: {HISTORY_REFRESH_INTERVAL_SECONDS}s | "
+        "Keys: s reverse date order | F5 refresh"
+    )
 
 
 def optional_file_path(config: dict[str, Any], key: str) -> Path | None:
