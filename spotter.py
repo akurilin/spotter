@@ -563,6 +563,7 @@ def system_prompt() -> str:
         "You classify WhatsApp group messages for topic-based user alerts. "
         "Return only messages that clearly match at least one configured topic. "
         "Do not score or return non-matching messages. "
+        "If a message matches multiple topics, return only the first matching topic in the configured topic list. "
         "Use the exact message_pk and topic id values from the input. "
         "Never invent, approximate, or alter message_pk values; omit a match if the exact id is not present. "
         "Confidence must be a number from 0 to 1. "
@@ -673,9 +674,12 @@ def build_alerts(
     matches: list[dict[str, Any]],
     existing_alert_keys: set[tuple[int, str]],
 ) -> list[dict[str, Any]]:
-    """Turn validated topic matches into alert rows after thresholds and dedupe checks."""
+    """Turn validated topic matches into one alert per message, preferring configured topic order."""
     message_by_pk = {message.message_pk: message for message in messages}
-    topic_by_id = {topic.id: topic for topic in get_topics(config)}
+    topics = get_topics(config)
+    topic_by_id = {topic.id: topic for topic in topics}
+    existing_message_pks = {message_pk for message_pk, _topic_id in existing_alert_keys}
+    eligible_matches = {}
     alerts = []
 
     for match in matches:
@@ -683,29 +687,39 @@ def build_alerts(
         topic_id = str(match["topic_id"])
         topic = topic_by_id[topic_id]
         confidence = float(match["confidence"])
-        alert_key = (message_pk, topic_id)
 
-        if confidence < topic.threshold or alert_key in existing_alert_keys:
+        if confidence < topic.threshold:
+            continue
+        eligible_matches.setdefault((message_pk, topic_id), match)
+
+    for message_pk, message in message_by_pk.items():
+        if message_pk in existing_message_pks:
             continue
 
-        message = message_by_pk[message_pk]
-        alerts.append(
-            {
-                "created_at": now_iso(),
-                "message_pk": message.message_pk,
-                "topic_id": topic.id,
-                "topic_name": topic.name,
-                "confidence": round(confidence, 4),
-                "reason": str(match["reason"]),
-                "notification": str(match["notification"]),
-                "group_name": message.group_name,
-                "group_jid": message.group_jid,
-                "sender_name": message.sender_name,
-                "sender_jid": message.sender_jid,
-                "local_time": message.local_time,
-                "text": message.text,
-            }
-        )
+        for topic in topics:
+            match = eligible_matches.get((message_pk, topic.id))
+            if match is None:
+                continue
+
+            confidence = float(match["confidence"])
+            alerts.append(
+                {
+                    "created_at": now_iso(),
+                    "message_pk": message.message_pk,
+                    "topic_id": topic.id,
+                    "topic_name": topic.name,
+                    "confidence": round(confidence, 4),
+                    "reason": str(match["reason"]),
+                    "notification": str(match["notification"]),
+                    "group_name": message.group_name,
+                    "group_jid": message.group_jid,
+                    "sender_name": message.sender_name,
+                    "sender_jid": message.sender_jid,
+                    "local_time": message.local_time,
+                    "text": message.text,
+                }
+            )
+            break
 
     return alerts
 
