@@ -56,8 +56,8 @@ class SpotterTui(App):
     """Textual application for spotter history and LaunchAgent operations."""
 
     BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
-        ("1", "show_runs", "1 Runs"),
-        ("2", "show_alerts", "2 Alerts"),
+        ("1", "show_alerts", "1 Alerts"),
+        ("2", "show_runs", "2 Runs"),
         ("3", "show_agent", "3 Agent"),
         ("f5", "refresh_data", "Refresh"),
         ("q", "quit", "Quit"),
@@ -81,6 +81,12 @@ class SpotterTui(App):
         margin: 0 1 1 1;
     }
 
+    #runs-shortcuts, #alerts-shortcuts {
+        height: 1;
+        padding: 0 1;
+        color: $text-muted;
+    }
+
     #agent-status {
         height: 1;
         padding: 0 1;
@@ -102,17 +108,21 @@ class SpotterTui(App):
         self.title = "spotter"
         self.usage_path = optional_file_path(config, "usage")
         self.alerts_path = required_file_path(config, "alerts")
+        self.runs_newest_first = True
+        self.alerts_newest_first = True
 
     def compose(self) -> ComposeResult:
         """Build the app layout with numbered top-level tabs."""
         yield Header()
-        with TabbedContent(initial="runs", id="view-tabs"):
-            with TabPane("1 Runs", id="runs"):
+        with TabbedContent(initial="alerts", id="view-tabs"):
+            with TabPane("1 Alerts", id="alerts"):
+                yield Static(id="alerts-shortcuts")
+                yield DataTable(id="alerts-table", cursor_type="row")
+            with TabPane("2 Runs", id="runs"):
+                yield Static(id="runs-shortcuts")
                 yield Static(id="runs-summary")
                 yield Sparkline(id="runs-sparkline")
                 yield DataTable(id="runs-table", cursor_type="row")
-            with TabPane("2 Alerts", id="alerts"):
-                yield DataTable(id="alerts-table", cursor_type="row")
             with TabPane("3 Agent", id="agent"):
                 yield Static(id="agent-status")
                 yield Static(
@@ -126,7 +136,7 @@ class SpotterTui(App):
         self.refresh_runs_table()
         self.refresh_alerts_table()
         self.refresh_agent_panel()
-        self.focus_runs_table()
+        self.focus_alerts_table()
 
     def action_show_runs(self) -> None:
         """Switch to the run history tab."""
@@ -159,7 +169,20 @@ class SpotterTui(App):
 
     def on_key(self, event: events.Key) -> None:
         """Handle key commands that are local to the active tab."""
-        if self.query_one("#view-tabs", TabbedContent).active != "agent":
+        active_tab = self.query_one("#view-tabs", TabbedContent).active
+        if active_tab == "runs" and event.key == "s":
+            event.stop()
+            self.runs_newest_first = not self.runs_newest_first
+            self.refresh_runs_table()
+            self.focus_runs_table()
+            return
+        if active_tab == "alerts" and event.key == "s":
+            event.stop()
+            self.alerts_newest_first = not self.alerts_newest_first
+            self.refresh_alerts_table()
+            self.focus_alerts_table()
+            return
+        if active_tab != "agent":
             return
         if event.key == "e":
             event.stop()
@@ -185,6 +208,7 @@ class SpotterTui(App):
         """Reload usage records from disk into the runs table."""
         table = self.query_one("#runs-table", DataTable)
         reset_table(table, RUN_COLUMNS)
+        self.query_one("#runs-shortcuts", Static).update(format_sort_shortcuts(self.runs_newest_first))
 
         rows = read_jsonl_objects(self.usage_path)
         self.refresh_runs_sparkline(rows)
@@ -192,7 +216,7 @@ class SpotterTui(App):
             add_empty_row(table, len(RUN_COLUMNS), "No run records found.")
             return
 
-        for row in reversed(rows):
+        for row in sort_rows_by_timestamp(rows, "started_at", self.runs_newest_first):
             table.add_row(
                 format_timestamp(row.get("started_at")),
                 text_value(row.get("status")),
@@ -217,13 +241,14 @@ class SpotterTui(App):
         """Reload alert records from disk into the alerts table."""
         table = self.query_one("#alerts-table", DataTable)
         reset_table(table, ALERT_COLUMNS)
+        self.query_one("#alerts-shortcuts", Static).update(format_sort_shortcuts(self.alerts_newest_first))
 
         rows = read_jsonl_objects(self.alerts_path)
         if not rows:
             add_empty_row(table, len(ALERT_COLUMNS), "No alert records found.")
             return
 
-        for row in reversed(rows):
+        for row in sort_rows_by_timestamp(rows, "created_at", self.alerts_newest_first):
             table.add_row(
                 format_timestamp(row.get("created_at")),
                 shorten(row.get("topic_name"), 28),
@@ -315,6 +340,39 @@ def read_jsonl_objects(path: Path | None) -> list[JsonObject]:
             if isinstance(row, dict):
                 rows.append(row)
     return rows
+
+
+def sort_rows_by_timestamp(rows: list[JsonObject], field: str, newest_first: bool) -> list[JsonObject]:
+    """Sort dated rows in the requested direction, leaving undated rows last."""
+    dated_rows: list[tuple[datetime, JsonObject]] = []
+    undated_rows: list[JsonObject] = []
+    for row in rows:
+        timestamp = parse_timestamp(row.get(field))
+        if timestamp is None:
+            undated_rows.append(row)
+        else:
+            dated_rows.append((timestamp, row))
+
+    dated_rows.sort(key=lambda item: item[0], reverse=newest_first)
+    return [row for _, row in dated_rows] + undated_rows
+
+
+def parse_timestamp(value: Any) -> datetime | None:
+    """Parse an ISO-8601 timestamp into a consistently comparable datetime."""
+    text = text_value(value)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed.astimezone()
+
+
+def format_sort_shortcuts(newest_first: bool) -> str:
+    """Return the page-local date-order status and shortcuts."""
+    order = "newest first" if newest_first else "oldest first"
+    return f"Date order: {order} | Keys: s reverse date order | F5 refresh"
 
 
 def optional_file_path(config: dict[str, Any], key: str) -> Path | None:
