@@ -157,6 +157,21 @@ tail -f ~/Library/Logs/spotter/spotter.log
 ./.venv/bin/python -m ruff check --fix .
 ```
 
+## Manual classifier evals
+
+Historical classifier failures live in `evals/cases.jsonl` and can be replayed by hand against the configured live model. They are deliberately separate from normal tests because they call Anthropic and spend real tokens.
+
+```bash
+# Inspect cases without calling the model.
+./.venv/bin/python evals/run_classifier_evals.py --list
+
+# Run the suite manually against the current config/model.
+./.venv/bin/python evals/run_classifier_evals.py --live --verbose
+```
+
+See `evals/README.md` for the case format and privacy-scrubbing expectations.
+The eval runner uses `llm.model` from `config.json` and refuses to run unless `llm.temperature` is `0` or JSON `null` for models that reject the temperature parameter.
+
 ## State
 
 The scanner uses one universal WhatsApp message cursor in `state.json`. On the first run, when no cursor exists, it scans the last `initial_backfill_days` of group messages (default 14).

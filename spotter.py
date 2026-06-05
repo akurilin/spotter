@@ -493,7 +493,6 @@ def classify_batch(
     kwargs = {
         "model": str(llm_config.get("model", DEFAULT_MODEL)),
         "max_tokens": max_tokens,
-        "temperature": float(llm_config.get("temperature", 0)),
         "system": system_prompt(),
         "messages": [
             {
@@ -502,6 +501,9 @@ def classify_batch(
             }
         ],
     }
+    temperature = llm_config.get("temperature", 0)
+    if temperature is not None:
+        kwargs["temperature"] = float(temperature)
 
     if bool(llm_config.get("use_output_config", True)):
         kwargs["output_config"] = {"format": {"type": "json_schema", "schema": matches_schema()}}
