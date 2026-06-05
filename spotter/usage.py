@@ -44,8 +44,7 @@ class UsageRecord:
     model: str
     dry_run: bool
     status: str
-    raw_messages: int
-    configured_messages: int
+    messages: int
     batches: int
     alerts: int
     input_tokens: int

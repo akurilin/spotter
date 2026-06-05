@@ -1,8 +1,7 @@
 """Read-only access to the local WhatsApp macOS SQLite database.
 
-Owns the SQL queries, the row → :class:`Message` conversion, and the sender-name
-and group-filter helpers that only make sense in the context of WhatsApp's
-schema.
+Owns the SQL queries, the row → :class:`Message` conversion, and the
+sender-name helpers that only make sense in the context of WhatsApp's schema.
 """
 
 from __future__ import annotations
@@ -36,7 +35,6 @@ class Message:
 class FetchResult:
     messages: list[Message]
     fetched_high_water_pk: int | None
-    raw_message_count: int
 
 
 def open_whatsapp_db(config: dict[str, Any]) -> sqlite3.Connection:
@@ -128,12 +126,11 @@ def fetch_candidate_messages(
         params,
     ).fetchall()
 
-    raw_messages = [message_from_row(row) for row in rows]
-    fetched_high_water_pk = max((message.message_pk for message in raw_messages), default=None)
+    messages = [message_from_row(row) for row in rows]
+    fetched_high_water_pk = max((message.message_pk for message in messages), default=None)
     return FetchResult(
-        messages=filter_groups(raw_messages, whatsapp_config.get("groups", {})),
+        messages=messages,
         fetched_high_water_pk=fetched_high_water_pk,
-        raw_message_count=len(raw_messages),
     )
 
 
@@ -154,23 +151,18 @@ def fetch_message_local_time(conn: sqlite3.Connection, message_pk: Any) -> str |
     return str(row["local_time"])
 
 
-def count_configured_groups(conn: sqlite3.Connection, config: dict[str, Any]) -> int:
-    """Count WhatsApp groups that match the current include/exclude configuration."""
-    rows = conn.execute(
+def count_groups(conn: sqlite3.Connection) -> int:
+    """Count WhatsApp group chats visible in the local database."""
+    row = conn.execute(
         """
-        SELECT
-            COALESCE(NULLIF(s.ZPARTNERNAME, ''), s.ZCONTACTJID) AS group_name,
-            s.ZCONTACTJID AS group_jid
+        SELECT COUNT(*) AS group_count
         FROM ZWACHATSESSION s
         WHERE
             (s.ZGROUPINFO IS NOT NULL OR s.ZSESSIONTYPE IN (1, 4) OR s.ZCONTACTJID LIKE '%@g.us')
             AND s.ZCONTACTJID NOT LIKE '%@status'
         """
-    ).fetchall()
-    group_config = config.get("whatsapp", {}).get("groups", {})
-    return sum(
-        1 for row in rows if group_is_included(str(row["group_name"] or ""), str(row["group_jid"] or ""), group_config)
-    )
+    ).fetchone()
+    return int(row["group_count"]) if row and row["group_count"] is not None else 0
 
 
 def fetch_max_group_message_pk(conn: sqlite3.Connection) -> int | None:
@@ -304,25 +296,3 @@ def format_phone_digits(digits: str) -> str:
     if len(digits) == 11 and digits.startswith("1"):
         return f"+1 {digits[1:4]} {digits[4:7]} {digits[7:]}"
     return f"+{digits}"
-
-
-def filter_groups(messages: list[Message], group_config: dict[str, Any]) -> list[Message]:
-    """Apply configured group include and exclude filters to fetched messages."""
-    return [message for message in messages if group_is_included(message.group_name, message.group_jid, group_config)]
-
-
-def group_is_included(group_name: str, group_jid: str, group_config: dict[str, Any]) -> bool:
-    """Return whether a group name/JID passes configured include and exclude filters."""
-    include = normalize_filter_values(group_config.get("include", []))
-    exclude = normalize_filter_values(group_config.get("exclude", []))
-    haystack = {group_name.casefold(), group_jid.casefold()}
-    if include and not any(value in haystack for value in include):
-        return False
-    return not (exclude and any(value in haystack for value in exclude))
-
-
-def normalize_filter_values(values: Any) -> set[str]:
-    """Normalize configured group filter values for case-insensitive exact matching."""
-    if not isinstance(values, list):
-        return set()
-    return {str(value).casefold() for value in values if str(value).strip()}

@@ -49,7 +49,7 @@ Runtime targets:
 
 1. The CLI loads `config.json` and `.env`, configures logging, and opens the WhatsApp `ChatStorage.sqlite` read-only.
 2. It reads the universal cursor from `state.json`. On the first run with no cursor, it backfills the last `initial_backfill_days` of group messages (default 14).
-3. New group messages since the cursor are pulled, filtered against the configured include/exclude group lists, and stripped of system messages, status updates, and (by default) the user's own messages.
+3. New group messages since the cursor are pulled and stripped of system messages, status updates, and (by default) the user's own messages.
 4. Messages are batched (default 100 per batch) and each batch is sent to Claude with the topic descriptions as a system prompt and a JSON-schema-constrained matches response.
 5. Each response is validated: every match must reference a `message_pk` present in the batch and a `topic_id` defined in `config.json`. Malformed batches abort the run without advancing the cursor.
 6. Validated matches are composed into alerts, deduped against the existing `alerts.jsonl`, and written to disk.
@@ -76,7 +76,7 @@ The Anthropic API key is the only secret leaving the machine. WhatsApp database 
 
 spotter has two configuration files, both gitignored, both bootstrapped from `.example` templates:
 
-- **`config.json`** holds everything about *behavior*: topics, WhatsApp DB path, batch sizes, group include/exclude, LLM model + token caps, notification toggles, LaunchAgent label and interval, log directory, and output file paths. Copy it from `config.example.json` and edit the topics.
+- **`config.json`** holds everything about *behavior*: topics, WhatsApp DB path, batch sizes, LLM model + token caps, notification toggles, LaunchAgent label and interval, log directory, and output file paths. Copy it from `config.example.json` and edit the topics.
 - **`.env`** holds *secrets only*: `ANTHROPIC_API_KEY` (required), and `PUSHOVER_APP_TOKEN` + `PUSHOVER_USER_KEY` (only if `notifications.pushover` is `true` in `config.json`). Copy it from `.env.example`.
 
 This split lets you check in changes to `config.example.json` (defaults, new options) without touching anyone's local secrets, and lets you rotate keys without rewriting your topic config.

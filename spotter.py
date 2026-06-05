@@ -21,7 +21,7 @@ from spotter.paths import app_log_path, logging_config
 from spotter.usage import UsageAccumulator, UsageRecord, new_run_id, write_usage_record
 from spotter.whatsapp_db import (
     Message,
-    count_configured_groups,
+    count_groups,
     fetch_candidate_messages,
     fetch_max_group_message_pk,
     fetch_message_local_time,
@@ -219,8 +219,7 @@ def run_scan(config: dict[str, Any], dry_run: bool, limit_override: int | None) 
     started_at = now_iso()
     accumulator = UsageAccumulator()
     status = "ok"
-    raw_message_count = 0
-    configured_message_count = 0
+    message_count = 0
     alert_count = 0
 
     LOGGER.info(
@@ -236,13 +235,12 @@ def run_scan(config: dict[str, Any], dry_run: bool, limit_override: int | None) 
     try:
         with open_whatsapp_db(config) as conn:
             cursor_time = fetch_message_local_time(conn, last_pk) if isinstance(last_pk, int) else None
-            group_count = count_configured_groups(conn, config)
+            group_count = count_groups(conn)
             fetch_result = fetch_candidate_messages(conn, config, state, limit_override)
             max_group_pk = fetch_max_group_message_pk(conn)
 
         messages = fetch_result.messages
-        raw_message_count = fetch_result.raw_message_count
-        configured_message_count = len(messages)
+        message_count = len(messages)
         fetched_high_water_pk = fetch_result.fetched_high_water_pk
 
         if isinstance(last_pk, int):
@@ -253,16 +251,15 @@ def run_scan(config: dict[str, Any], dry_run: bool, limit_override: int | None) 
                 whatsapp_config.get("initial_backfill_days", 14),
             )
         LOGGER.info(
-            "WhatsApp scan scope: groups=%s raw_messages=%s configured_messages=%s high_water_pk=%s",
+            "WhatsApp scan scope: groups=%s messages=%s high_water_pk=%s",
             group_count,
-            raw_message_count,
-            configured_message_count,
+            message_count,
             fetched_high_water_pk,
         )
 
         if not messages:
             status = "no_messages"
-            LOGGER.info("No configured group messages to classify.")
+            LOGGER.info("No new group messages to classify.")
             next_cursor = fetched_high_water_pk
             if next_cursor is None and state.get("last_processed_message_pk") is None:
                 next_cursor = max_group_pk
@@ -273,7 +270,7 @@ def run_scan(config: dict[str, Any], dry_run: bool, limit_override: int | None) 
                 LOGGER.info("Advanced cursor to message %s.", next_cursor)
             return 0
 
-        LOGGER.info("Fetched %s group messages for classification.", configured_message_count)
+        LOGGER.info("Fetched %s group messages for classification.", message_count)
         existing_alert_keys = read_existing_alert_keys(alerts_path)
 
         try:
@@ -329,8 +326,7 @@ def run_scan(config: dict[str, Any], dry_run: bool, limit_override: int | None) 
                         model=model,
                         dry_run=dry_run,
                         status=status,
-                        raw_messages=raw_message_count,
-                        configured_messages=configured_message_count,
+                        messages=message_count,
                         batches=accumulator.batches,
                         alerts=alert_count,
                         input_tokens=accumulator.input_tokens,
