@@ -1,3 +1,15 @@
+# Project Overview
+
+`spotter` is a local, single-user macOS CLI that watches WhatsApp group chats for messages matching topics the user defines in plain English, and pings them via macOS Notification Center and/or Pushover when something relevant comes through. The point is to keep noisy WhatsApp groups muted without missing the few high-signal messages that actually matter (job leads, deal mentions, a specific name dropped in a 200-person channel).
+
+Operationally it reads the WhatsApp desktop app's `ChatStorage.sqlite` in read-only mode, pulls new group messages since a cursor stored in `state.json`, sends them in batches to the Claude API with the configured topic descriptions, and writes validated matches to `alerts.jsonl` before firing notifications. The cursor only advances when every batch in a run succeeds, so transient API or rate-limit failures cause the next run to retry the same messages rather than silently drop them. A LaunchAgent runs the scan periodically; a Textual TUI shows run/alert/usage history.
+
+Design constraints worth knowing before changing anything:
+- The WhatsApp database is opened with SQLite URI `mode=ro` — never modify WhatsApp files.
+- Single user, single machine, single LLM provider (Anthropic). No multi-tenancy or provider abstraction.
+- Every WhatsApp message is treated as untrusted input; validated matches must reference a `message_pk` from the current batch and a `topic_id` from `config.json`.
+- `README.md` has the full architecture, configuration model, and end-to-end scan flow if more context is needed.
+
 # Project Instructions
 
 - Always use the local Python virtual environment in `.venv` for this project.
@@ -9,16 +21,19 @@
 - Before committing Python changes, run Ruff on the project with `./.venv/bin/python -m ruff format .` and `./.venv/bin/python -m ruff check .`.
 - Run Ruff / formatting / linting only before committing
 - Avoid including any information about real WhatsApp groups, their users and their messages' contents when writing test cases and evals
+- Keep the Project Files section below in sync: whenever a tracked file is added, removed, renamed, or substantially repurposed, update its entry in the same change.
 
 # Project Files
 
-- `spotter.py` - Main CLI, scan orchestration, LLM classification, alert construction, and state writes.
+- `spotter.py` - Main CLI, scan orchestration, alert construction, and state writes.
+- `spotter/classifier.py` - Claude API client: system prompt, JSON schema, batching, retry, parsing, and match validation.
 - `spotter/errors.py` - Shared application exception types.
 - `spotter/launchagent.py` - LaunchAgent generation, installation, removal, and status inspection.
 - `spotter/notifications.py` - macOS and Pushover notification delivery and formatting.
 - `spotter/paths.py` - Runtime log and application path resolution.
 - `spotter/preflight.py` - Read-only WhatsApp database access checks.
 - `spotter/tui.py` - Keyboard-first Textual terminal interface.
+- `spotter/types.py` - Shared dataclasses and config helpers (`Topic`, `get_topics`) consumed by orchestrator and classifier.
 - `spotter/usage.py` - Per-run LLM token and scanner usage records.
 - `spotter/whatsapp_db.py` - Read-only WhatsApp SQLite queries and message conversion.
 - `tests/support.py` - Shared unittest helpers and application logging suppression.
