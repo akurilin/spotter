@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +32,11 @@ class UsageAccumulator:
         self.output_tokens += int(getattr(usage, "output_tokens", 0) or 0)
         self.cache_creation_input_tokens += int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
         self.cache_read_input_tokens += int(getattr(usage, "cache_read_input_tokens", 0) or 0)
+
+    def merge(self, other: UsageAccumulator) -> None:
+        """Add another completed accumulator into this one."""
+        for field in fields(self):
+            setattr(self, field.name, getattr(self, field.name) + getattr(other, field.name))
 
 
 @dataclass(frozen=True)

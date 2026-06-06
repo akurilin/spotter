@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+from spotter.alerts import build_alerts
 from spotter.models import Match, Message
 from spotter.notifications import notify_alerts
-from tests.support import TestCase, config_dict, load_spotter_cli, make_config
-
-spotter_cli = load_spotter_cli()
+from tests.support import TestCase, config_dict, make_config
 
 
 class AlertTests(TestCase):
@@ -53,7 +52,13 @@ class AlertTests(TestCase):
             ),
         )
 
-        alerts = spotter_cli.build_alerts(config.topics, [message], matches, existing_alert_keys=set())
+        alerts = build_alerts(
+            config.topics,
+            [message],
+            matches,
+            existing_alert_keys=set(),
+            created_at="2026-01-02T03:05:00+00:00",
+        )
 
         with patch("spotter.notifications.send_macos_notification") as send_notification:
             failures = notify_alerts(config.notifications, alerts)

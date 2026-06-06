@@ -25,7 +25,8 @@ Design constraints worth knowing before changing anything:
 
 # Project Files
 
-- `spotter.py` - Main CLI, scan orchestration, alert construction, and state writes.
+- `spotter.py` - Main CLI, scan orchestration, state writes, and error recording.
+- `spotter/alerts.py` - Alert thresholding, topic-priority selection, deduplication, and formatting.
 - `spotter/classifier.py` - Claude API client: system prompt, JSON schema, batching, retry, parsing, and match validation.
 - `spotter/config.py` - Central Pydantic-based typed configuration loading, defaults, and validation.
 - `spotter/errors.py` - Shared application exception types.
@@ -47,3 +48,4 @@ Design constraints worth knowing before changing anything:
 - `tests/test_config.py` - Typed configuration parsing, defaults, and validation tests.
 - `tests/test_scan.py` - Happy-path scan test with mocked external services and validated temporary filesystem outputs.
 - `tests/test_tui.py` - TUI navigation, sorting, refresh, configuration display, and redaction tests.
+- `tests/test_usage.py` - Usage accumulator addition and merge behavior tests.

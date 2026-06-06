@@ -30,7 +30,8 @@ spotter is a single-process Python CLI split into a thin entry point plus a smal
 
 | Component                       | Role                                                                                  |
 | ------------------------------- | ------------------------------------------------------------------------------------- |
-| `spotter.py`                    | CLI entry point, scan orchestration, alert composition, dedupe                        |
+| `spotter.py`                    | CLI entry point, scan orchestration, state writes, and error recording                |
+| `spotter/alerts.py`             | Alert thresholding, topic-priority selection, deduplication, and formatting           |
 | `spotter/classifier.py`         | Claude batching, structured response parsing, validation, and usage collection        |
 | `spotter/config.py`             | Pydantic-based typed configuration loading, defaults, and validation                  |
 | `spotter/identity.py`           | Shared sender identity normalization and display fallbacks                            |
@@ -172,6 +173,9 @@ Historical classifier failures live in `evals/cases.jsonl` and can be replayed b
 
 # Run the suite manually against the current config/model.
 ./.venv/bin/python evals/run_classifier_evals.py --live --verbose
+
+# Compare another model without editing config.json.
+./.venv/bin/python evals/run_classifier_evals.py --live --model claude-opus-4-8 --omit-temperature
 ```
 
 See `evals/README.md` for the case format and privacy-scrubbing expectations.

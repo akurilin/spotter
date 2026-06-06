@@ -22,9 +22,15 @@ Run one case:
 ./.venv/bin/python evals/run_classifier_evals.py --live --case robotics_nyc_openclaw_ai_agent_workshop_false_positive
 ```
 
+Compare another model without editing `config.json`:
+
+```bash
+./.venv/bin/python evals/run_classifier_evals.py --live --model claude-opus-4-8 --omit-temperature
+```
+
 The runner loads `.env`, uses the model and topic definitions from `config.json`, calls the same `classify_messages` path as production, applies topic thresholds through `build_alerts`, and reports pass/fail against the expected alert behavior.
 
-Manual evals require `llm.temperature` to be `0` for maximum reproducibility. Some Anthropic models reject the `temperature` parameter; set `llm.temperature` to JSON `null` for those models so the request omits it. To compare models, edit `llm.model` in `config.json` or pass a separate config with `--config`. Secrets are loaded from the repo `.env` by default; pass `--env` if you need a different file.
+Manual evals require `llm.temperature` to be `0` for maximum reproducibility. Some Anthropic models reject the `temperature` parameter; use `--omit-temperature` or set `llm.temperature` to JSON `null` for those models. To compare models, use `--model` or pass a separate config with `--config`. Secrets are loaded from the repo `.env` by default; pass `--env` if you need a different file.
 
 ## Add Cases
 

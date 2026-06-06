@@ -14,11 +14,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from spotter.alerts import build_alerts, format_alert_line, read_existing_alert_keys
 from spotter.classifier import classify_messages
-from spotter.config import AppConfig, LoggingConfig, Topic, load_config
+from spotter.config import AppConfig, LoggingConfig, load_config, load_env_file
 from spotter.errors import ClassificationError, ConfigError, LaunchAgentError, NotificationError
 from spotter.launchagent import install_launch_agent, show_launch_agent_status, uninstall_launch_agent
-from spotter.models import Alert, Match, Message
 from spotter.notifications import NotificationFailure, notify_alerts, send_test_notifications
 from spotter.paths import app_log_path
 from spotter.usage import UsageAccumulator, UsageRecord, new_run_id, write_usage_record
@@ -99,27 +99,6 @@ def resolve_config_path(path: Path) -> Path:
     if expanded_path.is_absolute():
         return expanded_path
     return (Path.cwd() / expanded_path).resolve()
-
-
-def load_env_file(path: Path) -> None:
-    """Load KEY=VALUE pairs from a local .env file into the process environment."""
-    if not path.exists():
-        return
-
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip()
-        if not key or key in os.environ:
-            continue
-
-        if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
-            value = value[1:-1]
-        os.environ[key] = value
 
 
 def configure_logging(config: LoggingConfig) -> None:
@@ -223,7 +202,7 @@ def run_scan(config: AppConfig, dry_run: bool, limit_override: int | None) -> in
             LOGGER.exception("Classification failed; cursor will not advance.")
             raise
 
-        alerts = build_alerts(config.topics, messages, matches, existing_alert_keys)
+        alerts = build_alerts(config.topics, messages, matches, existing_alert_keys, created_at=now_iso())
         alert_count = len(alerts)
         max_processed_pk = fetched_high_water_pk or max(message.message_pk for message in messages)
         LOGGER.info("Classification complete: matches=%s alerts_after_thresholds=%s", len(matches), alert_count)
@@ -338,87 +317,6 @@ def write_notification_failures(path: Path, failures: list[NotificationFailure])
             for failure in failures
         ],
     )
-
-
-def build_alerts(
-    topics: tuple[Topic, ...],
-    messages: list[Message],
-    matches: tuple[Match, ...],
-    existing_alert_keys: set[tuple[int, str]],
-) -> list[Alert]:
-    """Turn validated topic matches into one alert per message, preferring configured topic order."""
-    message_by_pk = {message.message_pk: message for message in messages}
-    topic_by_id = {topic.id: topic for topic in topics}
-    existing_message_pks = {message_pk for message_pk, _topic_id in existing_alert_keys}
-    eligible_matches = {}
-    alerts = []
-
-    for match in matches:
-        message_pk = match.message_pk
-        topic_id = match.topic_id
-        topic = topic_by_id[topic_id]
-        confidence = match.confidence
-
-        if confidence < topic.threshold:
-            continue
-        eligible_matches.setdefault((message_pk, topic_id), match)
-
-    for message_pk, message in message_by_pk.items():
-        if message_pk in existing_message_pks:
-            continue
-
-        for topic in topics:
-            match = eligible_matches.get((message_pk, topic.id))
-            if match is None:
-                continue
-
-            confidence = match.confidence
-            alerts.append(
-                Alert(
-                    created_at=now_iso(),
-                    message_pk=message.message_pk,
-                    topic_id=topic.id,
-                    topic_name=topic.name,
-                    confidence=round(confidence, 4),
-                    reason=match.reason,
-                    notification=match.notification,
-                    group_name=message.group_name,
-                    group_jid=message.group_jid,
-                    sender_name=message.sender_name,
-                    sender_jid=message.sender_jid,
-                    local_time=message.local_time,
-                    text=message.text,
-                )
-            )
-            break
-
-    return alerts
-
-
-def read_existing_alert_keys(path: Path) -> set[tuple[int, str]]:
-    """Read existing alert message/topic keys so repeated runs do not duplicate alerts."""
-    keys = set()
-    if not path.exists():
-        return keys
-
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            if not line.strip():
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            message_pk = row.get("message_pk")
-            topic_id = row.get("topic_id")
-            if isinstance(message_pk, int) and isinstance(topic_id, str):
-                keys.add((message_pk, topic_id))
-    return keys
-
-
-def format_alert_line(alert: Alert) -> str:
-    """Format one alert for readable CLI dry-run output."""
-    return f"[{alert.topic_name}] {alert.group_name} / {alert.sender_name} at {alert.local_time}: {alert.text}"
 
 
 def now_iso() -> str:

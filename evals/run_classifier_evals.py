@@ -2,17 +2,23 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import os
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CASES_PATH = Path(__file__).with_name("cases.jsonl")
+
+# This file is run directly, so the repository root is not otherwise importable.
 sys.path.insert(0, str(REPO_ROOT))
+
+from spotter.alerts import build_alerts  # noqa: E402
+from spotter.classifier import classify_messages  # noqa: E402
+from spotter.config import AppConfig, load_config, load_env_file  # noqa: E402
+from spotter.models import Alert, Match, Message  # noqa: E402
+from spotter.usage import UsageAccumulator  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -22,21 +28,10 @@ class ExpectedMatch:
 
 
 @dataclass(frozen=True)
-class EvalMessage:
-    message_pk: int
-    group_name: str
-    group_jid: str
-    sender_name: str
-    sender_jid: str | None
-    local_time: str
-    text: str
-
-
-@dataclass(frozen=True)
 class EvalCase:
     id: str
     name: str
-    messages: list[EvalMessage]
+    messages: list[Message]
     expected_matches: list[ExpectedMatch]
     expected_non_matches: list[ExpectedMatch]
     allow_extra_matches: bool
@@ -49,8 +44,8 @@ class CaseResult:
     case: EvalCase
     passed: bool
     failures: list[str]
-    raw_matches: list[dict[str, Any]]
-    alerts: list[dict[str, Any]]
+    raw_matches: tuple[Match, ...]
+    alerts: list[Alert]
 
 
 def main() -> int:
@@ -60,6 +55,12 @@ def main() -> int:
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES_PATH, help="Path to JSONL eval cases.")
     parser.add_argument("--config", type=Path, default=REPO_ROOT / "config.json", help="Path to spotter config JSON.")
     parser.add_argument("--env", type=Path, default=REPO_ROOT / ".env", help="Path to the .env file with secrets.")
+    parser.add_argument("--model", help="Override llm.model for this eval run.")
+    parser.add_argument(
+        "--omit-temperature",
+        action="store_true",
+        help="Omit the temperature parameter for models that reject it.",
+    )
     parser.add_argument("--case", action="append", dest="case_ids", help="Run only this case id. Can be repeated.")
     parser.add_argument("--list", action="store_true", help="List cases without calling the model.")
     parser.add_argument("--live", action="store_true", help="Actually call the configured model.")
@@ -90,10 +91,16 @@ def main() -> int:
         print("Refusing to run live classifier evals in CI without --allow-ci.", file=sys.stderr)
         return 2
 
-    spotter_cli = load_spotter_cli()
-    config_path = spotter_cli.resolve_config_path(args.config)
-    spotter_cli.load_env_file(args.env.expanduser().resolve())
-    config = spotter_cli.load_config(config_path)
+    config_path = args.config.expanduser().resolve()
+    load_env_file(args.env.expanduser().resolve())
+    config = load_config(config_path)
+    llm_updates = {}
+    if args.model:
+        llm_updates["model"] = args.model
+    if args.omit_temperature:
+        llm_updates["temperature"] = None
+    if llm_updates:
+        config = config.model_copy(update={"llm": config.llm.model_copy(update=llm_updates)})
     model = config.llm.model
     temperature = config.llm.temperature
     if temperature not in (0, None):
@@ -105,21 +112,10 @@ def main() -> int:
         return 2
     validate_case_topics(cases, {topic.id for topic in config.topics})
 
-    accumulator = spotter_cli.UsageAccumulator()
-    results = [run_case(spotter_cli, config, accumulator, case) for case in cases]
+    accumulator = UsageAccumulator()
+    results = [run_case(config, accumulator, case) for case in cases]
     print_results(results, accumulator, model=model, temperature=temperature, verbose=args.verbose)
     return 0 if all(result.passed for result in results) else 1
-
-
-def load_spotter_cli() -> Any:
-    module_path = REPO_ROOT / "spotter.py"
-    spec = importlib.util.spec_from_file_location("spotter_cli_for_evals", module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Could not load {module_path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 def load_cases(path: Path) -> list[EvalCase]:
@@ -136,7 +132,7 @@ def load_cases(path: Path) -> list[EvalCase]:
     return cases
 
 
-def parse_case(data: dict[str, Any]) -> EvalCase:
+def parse_case(data: dict) -> EvalCase:
     expected_matches = [parse_expected_match(item) for item in data.get("expected_matches", [])]
     expected_non_matches = [parse_expected_match(item) for item in data.get("expected_non_matches", [])]
     if not expected_matches and not expected_non_matches and not bool(data.get("allow_extra_matches", False)):
@@ -154,8 +150,8 @@ def parse_case(data: dict[str, Any]) -> EvalCase:
     )
 
 
-def parse_message(data: dict[str, Any]) -> EvalMessage:
-    return EvalMessage(
+def parse_message(data: dict) -> Message:
+    return Message(
         message_pk=int(data["message_pk"]),
         group_name=required_str(data, "group_name"),
         group_jid=required_str(data, "group_jid"),
@@ -166,18 +162,18 @@ def parse_message(data: dict[str, Any]) -> EvalMessage:
     )
 
 
-def parse_expected_match(data: dict[str, Any]) -> ExpectedMatch:
+def parse_expected_match(data: dict) -> ExpectedMatch:
     return ExpectedMatch(message_pk=int(data["message_pk"]), topic_id=required_str(data, "topic_id"))
 
 
-def required_str(data: dict[str, Any], key: str) -> str:
+def required_str(data: dict, key: str) -> str:
     value = data[key]
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{key} must be a non-empty string")
     return value.strip()
 
 
-def optional_str(value: Any) -> str | None:
+def optional_str(value: object) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str) or not value.strip():
@@ -185,7 +181,7 @@ def optional_str(value: Any) -> str | None:
     return value.strip()
 
 
-def require_list(data: dict[str, Any], key: str) -> list[Any]:
+def require_list(data: dict, key: str) -> list:
     value = data[key]
     if not isinstance(value, list) or not value:
         raise ValueError(f"{key} must be a non-empty list")
@@ -204,33 +200,22 @@ def validate_case_topics(cases: list[EvalCase], topic_ids: set[str]) -> None:
         )
 
 
-def run_case(spotter_cli: Any, config: Any, accumulator: Any, case: EvalCase) -> CaseResult:
-    messages = [spotter_cli.Message(**asdict(message)) for message in case.messages]
-    classification = spotter_cli.classify_messages(config.llm, config.whatsapp.batch_size, config.topics, messages)
-    accumulate_usage(accumulator, classification.usage)
-    raw_matches = [asdict(match) for match in classification.matches]
-    alerts = [
-        alert.to_dict()
-        for alert in spotter_cli.build_alerts(
-            config.topics, messages, classification.matches, existing_alert_keys=set()
-        )
-    ]
+def run_case(config: AppConfig, accumulator: UsageAccumulator, case: EvalCase) -> CaseResult:
+    classification = classify_messages(config.llm, config.whatsapp.batch_size, config.topics, case.messages)
+    accumulator.merge(classification.usage)
+    raw_matches = classification.matches
+    alerts = build_alerts(
+        config.topics,
+        case.messages,
+        classification.matches,
+        existing_alert_keys=set(),
+        created_at="eval",
+    )
     failures = evaluate_case(case, alerts)
     return CaseResult(case=case, passed=not failures, failures=failures, raw_matches=raw_matches, alerts=alerts)
 
 
-def accumulate_usage(accumulator: Any, usage: Any) -> None:
-    for field in (
-        "batches",
-        "input_tokens",
-        "output_tokens",
-        "cache_creation_input_tokens",
-        "cache_read_input_tokens",
-    ):
-        setattr(accumulator, field, getattr(accumulator, field) + getattr(usage, field))
-
-
-def evaluate_case(case: EvalCase, alerts: list[dict[str, Any]]) -> list[str]:
+def evaluate_case(case: EvalCase, alerts: list[Alert]) -> list[str]:
     actual_keys = {match_key(alert) for alert in alerts}
     expected_keys = {expected_key(expected) for expected in case.expected_matches}
     expected_non_keys = {expected_key(expected) for expected in case.expected_non_matches}
@@ -252,8 +237,8 @@ def evaluate_case(case: EvalCase, alerts: list[dict[str, Any]]) -> list[str]:
     return failures
 
 
-def match_key(match: dict[str, Any]) -> tuple[int, str]:
-    return int(match["message_pk"]), str(match["topic_id"])
+def match_key(match: Alert) -> tuple[int, str]:
+    return match.message_pk, match.topic_id
 
 
 def expected_key(expected: ExpectedMatch) -> tuple[int, str]:
@@ -265,7 +250,7 @@ def format_keys(keys: set[tuple[int, str]]) -> str:
 
 
 def print_results(
-    results: list[CaseResult], accumulator: Any, *, model: str, temperature: float | None, verbose: bool
+    results: list[CaseResult], accumulator: UsageAccumulator, *, model: str, temperature: float | None, verbose: bool
 ) -> None:
     passed_count = sum(result.passed for result in results)
     failed_count = len(results) - passed_count
@@ -292,13 +277,13 @@ def print_results(
                 print("    " + json.dumps(compact_match(alert), ensure_ascii=False, sort_keys=True))
 
 
-def compact_match(match: dict[str, Any]) -> dict[str, Any]:
+def compact_match(match: Match | Alert) -> dict:
     return {
-        "message_pk": match.get("message_pk"),
-        "topic_id": match.get("topic_id"),
-        "confidence": match.get("confidence"),
-        "reason": match.get("reason"),
-        "notification": match.get("notification"),
+        "message_pk": match.message_pk,
+        "topic_id": match.topic_id,
+        "confidence": match.confidence,
+        "reason": match.reason,
+        "notification": match.notification,
     }
 
 
