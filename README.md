@@ -30,14 +30,18 @@ spotter is a single-process Python CLI split into a thin entry point plus a smal
 
 | Component                       | Role                                                                                  |
 | ------------------------------- | ------------------------------------------------------------------------------------- |
-| `spotter.py`                    | CLI entry point, scan loop, Claude batching, alert composition, dedupe                |
+| `spotter.py`                    | CLI entry point, scan orchestration, alert composition, dedupe                        |
+| `spotter/classifier.py`         | Claude batching, structured response parsing, validation, and usage collection        |
+| `spotter/config.py`             | Pydantic-based typed configuration loading, defaults, and validation                  |
+| `spotter/identity.py`           | Shared sender identity normalization and display fallbacks                            |
+| `spotter/models.py`             | Shared domain values passed between scanner subsystems                                |
 | `spotter/whatsapp_db.py`        | Read-only access to the WhatsApp `ChatStorage.sqlite`, group filtering, cursor reads  |
 | `spotter/notifications.py`      | macOS Notification Center (`osascript`) and Pushover HTTP delivery                    |
 | `spotter/launchagent.py`        | Generate, install, query, and remove the LaunchAgent plist                            |
 | `spotter/tui.py`                | Textual terminal UI for run history, alert history, and LaunchAgent controls          |
 | `spotter/usage.py`              | Per-run Claude token-usage records appended to `usage.jsonl`                          |
 | `spotter/errors.py`             | Structured error records for `errors.jsonl`                                           |
-| `spotter/paths.py`              | Path expansion and project-root resolution                                            |
+| `spotter/paths.py`              | Runtime log path resolution                                                           |
 
 Runtime targets:
 

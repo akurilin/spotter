@@ -9,19 +9,20 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from spotter.classifier import DEFAULT_MODEL, classify_messages
+from spotter.classifier import classify_messages
+from spotter.config import AppConfig, LoggingConfig, Topic, load_config
 from spotter.errors import ClassificationError, ConfigError, LaunchAgentError, NotificationError
 from spotter.launchagent import install_launch_agent, show_launch_agent_status, uninstall_launch_agent
+from spotter.models import Alert, Match, Message
 from spotter.notifications import NotificationFailure, notify_alerts, send_test_notifications
-from spotter.paths import app_log_path, logging_config
-from spotter.types import get_topics
+from spotter.paths import app_log_path
 from spotter.usage import UsageAccumulator, UsageRecord, new_run_id, write_usage_record
 from spotter.whatsapp_db import (
-    Message,
     count_groups,
     fetch_candidate_messages,
     fetch_max_group_message_pk,
@@ -56,20 +57,20 @@ def main() -> int:
         config_path = resolve_config_path(Path(args.config))
         load_env_file(config_path.parent / ".env")
         config = load_config(config_path)
-        configure_logging(config)
+        configure_logging(config.logging)
         LOGGER.debug("Command started: %s", args.command)
 
         if args.command == "run":
             return run_scan(config, dry_run=args.dry_run, limit_override=args.limit)
         if args.command == "test-notification":
-            send_test_notifications(config)
+            send_test_notifications(config.notifications)
             return 0
         if args.command == "install-agent":
-            return install_launch_agent(config, config_path)
+            return install_launch_agent(config.launch_agent, config.logging, config_path)
         if args.command == "uninstall-agent":
-            return uninstall_launch_agent(config)
+            return uninstall_launch_agent(config.launch_agent)
         if args.command == "agent-status":
-            return show_launch_agent_status(config, config_path)
+            return show_launch_agent_status(config.launch_agent, config.logging, config.whatsapp, config_path)
         if args.command == "tui":
             from spotter.tui import run_tui
 
@@ -121,33 +122,12 @@ def load_env_file(path: Path) -> None:
         os.environ[key] = value
 
 
-def load_config(path: Path) -> dict[str, Any]:
-    """Read and validate the scanner configuration JSON file."""
-    if not path.exists():
-        raise ConfigError(f"Missing config file: {path}. Copy config.example.json to {path} and edit your topics.")
-
-    with path.open("r", encoding="utf-8") as handle:
-        config = json.load(handle)
-
-    topics = get_topics(config)
-    if not topics:
-        raise ConfigError("Config must contain at least one topic.")
-
-    topic_ids = [topic.id for topic in topics]
-    duplicates = sorted({topic_id for topic_id in topic_ids if topic_ids.count(topic_id) > 1})
-    if duplicates:
-        raise ConfigError(f"Duplicate topic ids: {', '.join(duplicates)}")
-
-    return config
-
-
-def configure_logging(config: dict[str, Any]) -> None:
+def configure_logging(config: LoggingConfig) -> None:
     """Configure console and file logging for interactive and LaunchAgent runs."""
     log_path = app_log_path(config)
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    level_name = str(logging_config(config).get("level", "INFO")).upper()
-    level = getattr(logging, level_name, logging.INFO)
+    level = getattr(logging, config.level, logging.INFO)
 
     LOGGER.handlers.clear()
     LOGGER.setLevel(level)
@@ -164,18 +144,15 @@ def configure_logging(config: dict[str, Any]) -> None:
     LOGGER.addHandler(console_handler)
 
 
-def run_scan(config: dict[str, Any], dry_run: bool, limit_override: int | None) -> int:
+def run_scan(config: AppConfig, dry_run: bool, limit_override: int | None) -> int:
     """Run one scanner pass from WhatsApp reads through classification and optional writes."""
-    state_path = config_path(config, "state")
-    alerts_path = config_path(config, "alerts")
-    errors_path = config_path(config, "errors")
-    usage_path = optional_config_path(config, "usage")
+    state_path = config.files.state
+    alerts_path = config.files.alerts
+    errors_path = config.files.errors
+    usage_path = config.files.usage
     state = read_json_file(state_path, default={})
     last_pk = state.get("last_processed_message_pk")
-    topics = get_topics(config)
-    llm_config = config.get("llm", {})
-    whatsapp_config = config.get("whatsapp", {})
-    model = str(llm_config.get("model", DEFAULT_MODEL))
+    model = config.llm.model
 
     run_id = new_run_id()
     started_at = now_iso()
@@ -190,15 +167,15 @@ def run_scan(config: dict[str, Any], dry_run: bool, limit_override: int | None) 
         dry_run,
         limit_override,
         model,
-        whatsapp_config.get("batch_size", 200),
-        len(topics),
+        config.whatsapp.batch_size,
+        len(config.topics),
     )
 
     try:
-        with open_whatsapp_db(config) as conn:
+        with open_whatsapp_db(config.whatsapp) as conn:
             cursor_time = fetch_message_local_time(conn, last_pk) if isinstance(last_pk, int) else None
             group_count = count_groups(conn)
-            fetch_result = fetch_candidate_messages(conn, config, state, limit_override)
+            fetch_result = fetch_candidate_messages(conn, config.whatsapp, state, limit_override)
             max_group_pk = fetch_max_group_message_pk(conn)
 
         messages = fetch_result.messages
@@ -210,7 +187,7 @@ def run_scan(config: dict[str, Any], dry_run: bool, limit_override: int | None) 
         else:
             LOGGER.info(
                 "Cursor before scan: empty; using initial_backfill_days=%s",
-                whatsapp_config.get("initial_backfill_days", 14),
+                config.whatsapp.initial_backfill_days,
             )
         LOGGER.info(
             "WhatsApp scan scope: groups=%s messages=%s high_water_pk=%s",
@@ -236,7 +213,9 @@ def run_scan(config: dict[str, Any], dry_run: bool, limit_override: int | None) 
         existing_alert_keys = read_existing_alert_keys(alerts_path)
 
         try:
-            matches = classify_messages(config, messages, accumulator)
+            classification = classify_messages(config.llm, config.whatsapp.batch_size, config.topics, messages)
+            matches = classification.matches
+            accumulator = classification.usage
         except ClassificationError as exc:
             status = "classification_failed"
             if not dry_run:
@@ -244,7 +223,7 @@ def run_scan(config: dict[str, Any], dry_run: bool, limit_override: int | None) 
             LOGGER.exception("Classification failed; cursor will not advance.")
             raise
 
-        alerts = build_alerts(config, messages, matches, existing_alert_keys)
+        alerts = build_alerts(config.topics, messages, matches, existing_alert_keys)
         alert_count = len(alerts)
         max_processed_pk = fetched_high_water_pk or max(message.message_pk for message in messages)
         LOGGER.info("Classification complete: matches=%s alerts_after_thresholds=%s", len(matches), alert_count)
@@ -256,8 +235,8 @@ def run_scan(config: dict[str, Any], dry_run: bool, limit_override: int | None) 
             LOGGER.info("Dry-run: cursor would advance to message %s.", max_processed_pk)
             return 0
 
-        append_jsonl(alerts_path, alerts)
-        notification_failures = notify_alerts(config, alerts)
+        append_jsonl(alerts_path, [alert.to_dict() for alert in alerts])
+        notification_failures = notify_alerts(config.notifications, alerts)
         if notification_failures:
             try:
                 write_notification_failures(errors_path, notification_failures)
@@ -299,22 +278,6 @@ def run_scan(config: dict[str, Any], dry_run: bool, limit_override: int | None) 
                 )
             except OSError as exc:
                 LOGGER.warning("Could not write usage record to %s: %s", usage_path, exc)
-
-
-def config_path(config: dict[str, Any], key: str) -> Path:
-    """Resolve a configured local file path such as state, alerts, or errors."""
-    value = config.get("files", {}).get(key)
-    if not isinstance(value, str) or not value:
-        raise ConfigError(f"Missing files.{key} in config.")
-    return Path(value).expanduser()
-
-
-def optional_config_path(config: dict[str, Any], key: str) -> Path | None:
-    """Resolve a configured local file path, returning None when unset."""
-    value = config.get("files", {}).get(key)
-    if not isinstance(value, str) or not value:
-        return None
-    return Path(value).expanduser()
 
 
 def read_json_file(path: Path, default: Any) -> Any:
@@ -370,7 +333,7 @@ def write_notification_failures(path: Path, failures: list[NotificationFailure])
                 "created_at": now_iso(),
                 "type": "notification_failed",
                 "message": failure.error,
-                "details": failure.__dict__,
+                "details": asdict(failure),
             }
             for failure in failures
         ],
@@ -378,24 +341,23 @@ def write_notification_failures(path: Path, failures: list[NotificationFailure])
 
 
 def build_alerts(
-    config: dict[str, Any],
+    topics: tuple[Topic, ...],
     messages: list[Message],
-    matches: list[dict[str, Any]],
+    matches: tuple[Match, ...],
     existing_alert_keys: set[tuple[int, str]],
-) -> list[dict[str, Any]]:
+) -> list[Alert]:
     """Turn validated topic matches into one alert per message, preferring configured topic order."""
     message_by_pk = {message.message_pk: message for message in messages}
-    topics = get_topics(config)
     topic_by_id = {topic.id: topic for topic in topics}
     existing_message_pks = {message_pk for message_pk, _topic_id in existing_alert_keys}
     eligible_matches = {}
     alerts = []
 
     for match in matches:
-        message_pk = int(match["message_pk"])
-        topic_id = str(match["topic_id"])
+        message_pk = match.message_pk
+        topic_id = match.topic_id
         topic = topic_by_id[topic_id]
-        confidence = float(match["confidence"])
+        confidence = match.confidence
 
         if confidence < topic.threshold:
             continue
@@ -410,23 +372,23 @@ def build_alerts(
             if match is None:
                 continue
 
-            confidence = float(match["confidence"])
+            confidence = match.confidence
             alerts.append(
-                {
-                    "created_at": now_iso(),
-                    "message_pk": message.message_pk,
-                    "topic_id": topic.id,
-                    "topic_name": topic.name,
-                    "confidence": round(confidence, 4),
-                    "reason": str(match["reason"]),
-                    "notification": str(match["notification"]),
-                    "group_name": message.group_name,
-                    "group_jid": message.group_jid,
-                    "sender_name": message.sender_name,
-                    "sender_jid": message.sender_jid,
-                    "local_time": message.local_time,
-                    "text": message.text,
-                }
+                Alert(
+                    created_at=now_iso(),
+                    message_pk=message.message_pk,
+                    topic_id=topic.id,
+                    topic_name=topic.name,
+                    confidence=round(confidence, 4),
+                    reason=match.reason,
+                    notification=match.notification,
+                    group_name=message.group_name,
+                    group_jid=message.group_jid,
+                    sender_name=message.sender_name,
+                    sender_jid=message.sender_jid,
+                    local_time=message.local_time,
+                    text=message.text,
+                )
             )
             break
 
@@ -454,12 +416,9 @@ def read_existing_alert_keys(path: Path) -> set[tuple[int, str]]:
     return keys
 
 
-def format_alert_line(alert: dict[str, Any]) -> str:
+def format_alert_line(alert: Alert) -> str:
     """Format one alert for readable CLI dry-run output."""
-    return (
-        f"[{alert['topic_name']}] {alert['group_name']} / {alert['sender_name']} "
-        f"at {alert['local_time']}: {alert['text']}"
-    )
+    return f"[{alert.topic_name}] {alert.group_name} / {alert.sender_name} at {alert.local_time}: {alert.text}"
 
 
 def now_iso() -> str:

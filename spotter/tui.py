@@ -8,10 +8,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, ClassVar
 
+from rich.markup import escape
 from textual import events
 from textual.app import App, ComposeResult
 from textual.widgets import DataTable, Footer, Header, Sparkline, Static, TabbedContent, TabPane
 
+from spotter.config import AppConfig, load_config
 from spotter.errors import ConfigError
 from spotter.launchagent import (
     LaunchAgentStatus,
@@ -118,14 +120,14 @@ class SpotterTui(App):
     }
     """
 
-    def __init__(self, config: dict[str, Any], config_path: Path) -> None:
+    def __init__(self, config: AppConfig, config_path: Path) -> None:
         """Initialize the TUI with configured read-only log paths."""
         super().__init__()
         self.config = config
         self.config_path = config_path
         self.title = "spotter"
-        self.usage_path = optional_file_path(config, "usage")
-        self.alerts_path = required_file_path(config, "alerts")
+        self.usage_path = config.files.usage
+        self.alerts_path = config.files.alerts
         self.runs_newest_first = True
         self.alerts_newest_first = True
         self.runs_file_signature: FileSignature = None
@@ -338,8 +340,8 @@ class SpotterTui(App):
         reset_table(table, AGENT_COLUMNS)
 
         try:
-            status = inspect_launch_agent(self.config, self.config_path)
-            database_access = check_whatsapp_database_access(self.config)
+            status = inspect_launch_agent(self.config.launch_agent, self.config.logging, self.config_path)
+            database_access = check_whatsapp_database_access(self.config.whatsapp)
         except (ConfigError, OSError, RuntimeError) as exc:
             self.query_one("#agent-status", Static).update(message or f"Automatic runs: UNKNOWN | {exc}")
             table.add_row("Status", "error", str(exc))
@@ -353,18 +355,16 @@ class SpotterTui(App):
     def reload_config_views(self) -> None:
         """Reload config.json and update both configuration views atomically."""
         try:
-            config = read_config_object(self.config_path)
-            usage_path = optional_file_path(config, "usage")
-            alerts_path = required_file_path(config, "alerts")
+            config = load_config(self.config_path)
         except (ConfigError, OSError) as exc:
             message = f"Reload failed: {exc}"
-            self.query_one("#config-summary", Static).update(message)
-            self.query_one("#topics-summary", Static).update(message)
+            self.query_one("#config-summary", Static).update(escape(message))
+            self.query_one("#topics-summary", Static).update(escape(message))
             return
 
         self.config = config
-        self.usage_path = usage_path
-        self.alerts_path = alerts_path
+        self.usage_path = config.files.usage
+        self.alerts_path = config.files.alerts
         with self.batch_update():
             self.refresh_config_table("Reloaded")
             self.refresh_topics_table("Reloaded")
@@ -373,7 +373,7 @@ class SpotterTui(App):
         """Render loaded non-topic configuration values."""
         table = self.query_one("#config-table", DataTable)
         reset_table(table, CONFIG_COLUMNS)
-        rows = config_display_rows(self.config)
+        rows = config_display_rows(self.config.model_dump(mode="json", exclude_none=True))
         summary = f"Loaded config: {self.config_path} | {len(rows)} settings"
         self.query_one("#config-summary", Static).update(f"{summary} | {message}" if message else summary)
         if not rows:
@@ -398,7 +398,7 @@ class SpotterTui(App):
     def enable_launch_agent(self) -> None:
         """Install or update the LaunchAgent from the current config."""
         try:
-            install_launch_agent(self.config, self.config_path, emit=False)
+            install_launch_agent(self.config.launch_agent, self.config.logging, self.config_path, emit=False)
         except (ConfigError, OSError, RuntimeError, subprocess.CalledProcessError) as exc:
             self.refresh_agent_panel(f"Enable failed: {exc}")
             self.focus_agent_table()
@@ -409,7 +409,7 @@ class SpotterTui(App):
     def disable_launch_agent(self) -> None:
         """Unload and remove the LaunchAgent."""
         try:
-            uninstall_launch_agent(self.config, emit=False)
+            uninstall_launch_agent(self.config.launch_agent, emit=False)
         except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
             self.refresh_agent_panel(f"Disable failed: {exc}")
             self.focus_agent_table()
@@ -418,7 +418,7 @@ class SpotterTui(App):
         self.focus_agent_table()
 
 
-def run_tui(config: dict[str, Any], config_path: Path) -> int:
+def run_tui(config: AppConfig, config_path: Path) -> int:
     """Start the terminal UI and block until the user exits it."""
     SpotterTui(config, config_path).run()
     return 0
@@ -479,45 +479,6 @@ def read_jsonl_objects(path: Path | None) -> list[JsonObject]:
             if isinstance(row, dict):
                 rows.append(row)
     return rows
-
-
-def read_config_object(path: Path) -> dict[str, Any]:
-    """Read and validate the configuration needed by the TUI."""
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            config = json.load(handle)
-    except json.JSONDecodeError as exc:
-        raise ConfigError(f"Invalid JSON in {path}: {exc.msg}") from exc
-
-    if not isinstance(config, dict):
-        raise ConfigError("Config root must be an object.")
-    validate_topics_config(config)
-    return config
-
-
-def validate_topics_config(config: dict[str, Any]) -> None:
-    """Validate configured topic structure before replacing the active config."""
-    topics = config.get("topics")
-    if not isinstance(topics, list) or not topics:
-        raise ConfigError("Config must contain at least one topic.")
-
-    topic_ids: list[str] = []
-    for topic in topics:
-        if not isinstance(topic, dict):
-            raise ConfigError("Each topic must be an object.")
-        for key in ("id", "name", "description"):
-            value = topic.get(key)
-            if not isinstance(value, str) or not value.strip():
-                raise ConfigError(f"Expected non-empty string for topic.{key}")
-        try:
-            float(topic.get("threshold", 0.75))
-        except (TypeError, ValueError) as exc:
-            raise ConfigError("Expected numeric topic.threshold") from exc
-        topic_ids.append(topic["id"].strip())
-
-    duplicates = sorted({topic_id for topic_id in topic_ids if topic_ids.count(topic_id) > 1})
-    if duplicates:
-        raise ConfigError(f"Duplicate topic ids: {', '.join(duplicates)}")
 
 
 def file_signature(path: Path | None) -> FileSignature:
@@ -589,23 +550,17 @@ def format_config_value(value: Any) -> str:
     return single_line_text(value)
 
 
-def topic_display_rows(config: dict[str, Any]) -> list[tuple[str, str, str, str, str]]:
+def topic_display_rows(config: AppConfig) -> list[tuple[str, str, str, str, str]]:
     """Return configured topics in classifier priority order."""
-    topics = config.get("topics", [])
-    if not isinstance(topics, list):
-        return []
-
     rows = []
-    for priority, topic in enumerate(topics, start=1):
-        if not isinstance(topic, dict):
-            continue
+    for priority, topic in enumerate(config.topics, start=1):
         rows.append(
             (
                 str(priority),
-                single_line_text(topic.get("id")),
-                single_line_text(topic.get("name")),
-                format_confidence(topic.get("threshold", 0.75)),
-                single_line_text(topic.get("description")),
+                topic.id,
+                topic.name,
+                format_confidence(topic.threshold),
+                single_line_text(topic.description),
             )
         )
     return rows
@@ -645,26 +600,6 @@ def format_sort_shortcuts(newest_first: bool) -> str:
         f"Date order: {order} | Auto-refresh: {HISTORY_REFRESH_INTERVAL_SECONDS}s | "
         "Keys: s reverse date order | F5 refresh"
     )
-
-
-def optional_file_path(config: dict[str, Any], key: str) -> Path | None:
-    """Resolve an optional file path from the config's files section."""
-    files = config.get("files", {})
-    if not isinstance(files, dict):
-        raise ConfigError("files config must be an object.")
-
-    value = files.get(key)
-    if not isinstance(value, str) or not value.strip():
-        return None
-    return Path(value).expanduser()
-
-
-def required_file_path(config: dict[str, Any], key: str) -> Path:
-    """Resolve a required file path from the config's files section."""
-    path = optional_file_path(config, key)
-    if path is None:
-        raise ConfigError(f"Missing files.{key} in config.")
-    return path
 
 
 def text_value(value: Any) -> str:

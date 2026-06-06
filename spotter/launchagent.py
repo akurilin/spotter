@@ -11,7 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from spotter.errors import ConfigError, LaunchAgentError
+from spotter.config import LaunchAgentConfig, LoggingConfig, WhatsAppConfig
+from spotter.errors import LaunchAgentError
 from spotter.paths import app_log_dir, app_log_path
 from spotter.preflight import check_whatsapp_database_access
 
@@ -47,20 +48,9 @@ class LaunchAgentStatus:
         return self.loaded and self.plist_matches_config is True and self.expected_plist_error is None
 
 
-def launch_agent_config(config: dict[str, Any]) -> dict[str, Any]:
-    """Return LaunchAgent settings with conservative defaults."""
-    agent_config = config.get("launch_agent", {})
-    if not isinstance(agent_config, dict):
-        raise ConfigError("launch_agent config must be an object.")
-    return agent_config
-
-
-def launch_agent_label(config: dict[str, Any]) -> str:
+def launch_agent_label(config: LaunchAgentConfig) -> str:
     """Return the configured launchd label for this scanner."""
-    label = launch_agent_config(config).get("label", "com.example.spotter")
-    if not isinstance(label, str) or not label.strip():
-        raise ConfigError("launch_agent.label must be a non-empty string.")
-    return label.strip()
+    return config.label
 
 
 def launch_agent_domain() -> str:
@@ -68,12 +58,12 @@ def launch_agent_domain() -> str:
     return f"gui/{os.getuid()}"
 
 
-def launch_agent_plist_path(config: dict[str, Any]) -> Path:
+def launch_agent_plist_path(config: LaunchAgentConfig) -> Path:
     """Return the per-user LaunchAgents plist path for this scanner."""
     return Path.home() / "Library" / "LaunchAgents" / f"{launch_agent_label(config)}.plist"
 
 
-def launch_agent_service_name(config: dict[str, Any]) -> str:
+def launch_agent_service_name(config: LaunchAgentConfig) -> str:
     """Return the launchctl service target for this scanner."""
     return f"{launch_agent_domain()}/{launch_agent_label(config)}"
 
@@ -97,15 +87,10 @@ def local_python_path() -> Path:
     return python_path
 
 
-def build_launch_agent_plist(config: dict[str, Any], config_path: Path) -> dict[str, Any]:
+def build_launch_agent_plist(config: LaunchAgentConfig, logging: LoggingConfig, config_path: Path) -> dict[str, Any]:
     """Build the launchd property list for periodic scanner execution."""
-    agent_config = launch_agent_config(config)
-    interval_seconds = int(agent_config.get("start_interval_seconds", 1800))
-    if interval_seconds <= 0:
-        raise ConfigError("launch_agent.start_interval_seconds must be positive.")
-
     root = project_root()
-    logs_dir = app_log_dir(config)
+    logs_dir = app_log_dir(logging)
     stdout_path = logs_dir / "launchd.out.log"
     stderr_path = logs_dir / "launchd.err.log"
 
@@ -119,8 +104,8 @@ def build_launch_agent_plist(config: dict[str, Any], config_path: Path) -> dict[
             "run",
         ],
         "WorkingDirectory": str(root),
-        "RunAtLoad": bool(agent_config.get("run_at_load", True)),
-        "StartInterval": interval_seconds,
+        "RunAtLoad": config.run_at_load,
+        "StartInterval": config.start_interval_seconds,
         "StandardOutPath": str(stdout_path),
         "StandardErrorPath": str(stderr_path),
         "EnvironmentVariables": {
@@ -129,13 +114,15 @@ def build_launch_agent_plist(config: dict[str, Any], config_path: Path) -> dict[
     }
 
 
-def install_launch_agent(config: dict[str, Any], config_path: Path, *, emit: bool = True) -> int:
+def install_launch_agent(
+    config: LaunchAgentConfig, logging: LoggingConfig, config_path: Path, *, emit: bool = True
+) -> int:
     """Install or update the per-user macOS LaunchAgent."""
-    app_log_dir(config).mkdir(parents=True, exist_ok=True)
+    app_log_dir(logging).mkdir(parents=True, exist_ok=True)
 
     plist_path = launch_agent_plist_path(config)
     plist_path.parent.mkdir(parents=True, exist_ok=True)
-    plist_data = build_launch_agent_plist(config, config_path)
+    plist_data = build_launch_agent_plist(config, logging, config_path)
     atomic_write_plist(plist_path, plist_data)
 
     run_checked(["plutil", "-lint", str(plist_path)], emit=emit)
@@ -145,11 +132,11 @@ def install_launch_agent(config: dict[str, Any], config_path: Path, *, emit: boo
     if emit:
         print(f"Installed LaunchAgent {launch_agent_label(config)}.")
         print(f"Plist: {plist_path}")
-        print(f"Logs: {app_log_dir(config)}")
+        print(f"Logs: {app_log_dir(logging)}")
     return 0
 
 
-def uninstall_launch_agent(config: dict[str, Any], *, emit: bool = True) -> int:
+def uninstall_launch_agent(config: LaunchAgentConfig, *, emit: bool = True) -> int:
     """Unload and remove the per-user macOS LaunchAgent."""
     plist_path = launch_agent_plist_path(config)
     bootout_launch_agent(config)
@@ -164,10 +151,15 @@ def uninstall_launch_agent(config: dict[str, Any], *, emit: bool = True) -> int:
     return 0
 
 
-def show_launch_agent_status(config: dict[str, Any], config_path: Path) -> int:
+def show_launch_agent_status(
+    config: LaunchAgentConfig,
+    logging: LoggingConfig,
+    whatsapp: WhatsAppConfig,
+    config_path: Path,
+) -> int:
     """Print the current launchd status for this scanner."""
-    status = inspect_launch_agent(config, config_path)
-    database_access = check_whatsapp_database_access(config)
+    status = inspect_launch_agent(config, logging, config_path)
+    database_access = check_whatsapp_database_access(whatsapp)
 
     print(f"Label: {status.label}")
     print(f"Service: {status.service_name}")
@@ -189,7 +181,7 @@ def show_launch_agent_status(config: dict[str, Any], config_path: Path) -> int:
     return 0
 
 
-def inspect_launch_agent(config: dict[str, Any], config_path: Path) -> LaunchAgentStatus:
+def inspect_launch_agent(config: LaunchAgentConfig, logging: LoggingConfig, config_path: Path) -> LaunchAgentStatus:
     """Inspect the configured LaunchAgent without mutating launchd or the plist."""
     label = launch_agent_label(config)
     service_name = launch_agent_service_name(config)
@@ -202,8 +194,8 @@ def inspect_launch_agent(config: dict[str, Any], config_path: Path) -> LaunchAge
     expected_plist_error = None
     expected_plist = None
     try:
-        expected_plist = build_launch_agent_plist(config, config_path)
-    except (ConfigError, LaunchAgentError, OSError, ValueError) as exc:
+        expected_plist = build_launch_agent_plist(config, logging, config_path)
+    except (LaunchAgentError, OSError, ValueError) as exc:
         current_python_error = str(exc) if isinstance(exc, LaunchAgentError) else None
         expected_plist_error = str(exc)
 
@@ -231,7 +223,7 @@ def inspect_launch_agent(config: dict[str, Any], config_path: Path) -> LaunchAge
         label=label,
         service_name=service_name,
         plist_path=plist_path,
-        app_log_path=app_log_path(config),
+        app_log_path=app_log_path(logging),
         current_python_path=current_python_path,
         current_python_error=current_python_error,
         plist_exists=plist_path.exists(),
@@ -315,7 +307,7 @@ def status_label(value: bool | None) -> str:
     return yes_no(value)
 
 
-def bootout_launch_agent(config: dict[str, Any]) -> None:
+def bootout_launch_agent(config: LaunchAgentConfig) -> None:
     """Unload the LaunchAgent if launchd currently knows about it."""
     plist_path = launch_agent_plist_path(config)
     service_result = subprocess.run(

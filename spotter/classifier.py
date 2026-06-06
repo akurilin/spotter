@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+from dataclasses import asdict
 from typing import Any
 
-from spotter.errors import ClassificationError, ConfigError
-from spotter.types import Topic, get_topics
+from spotter.config import LlmConfig, Topic
+from spotter.errors import ClassificationError
+from spotter.models import ClassificationResult, Match, Message
 from spotter.usage import UsageAccumulator
-from spotter.whatsapp_db import Message
 
 try:
     from anthropic import Anthropic, APIConnectionError, APIStatusError, APITimeoutError
@@ -17,14 +18,16 @@ except ImportError:  # pragma: no cover - handled at runtime for clear setup err
     APIConnectionError = APIStatusError = APITimeoutError = Exception  # type: ignore[misc,assignment]
 
 
-DEFAULT_MODEL = "claude-sonnet-4-6"
 LOGGER = logging.getLogger("spotter")
 
 
 def classify_messages(
-    config: dict[str, Any], messages: list[Message], accumulator: UsageAccumulator
-) -> list[dict[str, Any]]:
-    """Classify messages with Claude in configured batches and combine the returned matches."""
+    config: LlmConfig,
+    batch_size: int,
+    topics: tuple[Topic, ...],
+    messages: list[Message],
+) -> ClassificationResult:
+    """Classify messages with Claude in configured batches and return matches with usage."""
     if Anthropic is None:
         raise ClassificationError("Missing dependency: install requirements in .venv first.")
 
@@ -32,22 +35,18 @@ def classify_messages(
     if not api_key:
         raise ClassificationError("ANTHROPIC_API_KEY is not set. Add it to .env.")
 
-    llm_config = config.get("llm", {})
-    batch_size = int(config.get("whatsapp", {}).get("batch_size", 200))
-    if batch_size <= 0:
-        raise ConfigError("batch_size must be positive.")
-
     client = Anthropic(
         api_key=api_key,
-        timeout=float(llm_config.get("timeout_seconds", 120)),
-        max_retries=int(llm_config.get("max_retries", 3)),
+        timeout=config.timeout_seconds,
+        max_retries=config.max_retries,
     )
 
-    all_matches: list[dict[str, Any]] = []
-    topics = get_topics(config)
-    model = str(llm_config.get("model", DEFAULT_MODEL))
+    accumulator = UsageAccumulator()
+    all_matches: list[Match] = []
     batches = chunks(messages, batch_size)
-    LOGGER.info("Claude classification starting: model=%s batches=%s messages=%s", model, len(batches), len(messages))
+    LOGGER.info(
+        "Claude classification starting: model=%s batches=%s messages=%s", config.model, len(batches), len(messages)
+    )
     for batch_index, batch in enumerate(batches, start=1):
         LOGGER.info(
             "Classifying batch %s/%s: messages=%s pk_range=%s-%s time_range=%s to %s",
@@ -68,34 +67,30 @@ def classify_messages(
             ) from exc
         LOGGER.info("Batch %s/%s complete: matches=%s", batch_index, len(batches), len(batch_matches))
         all_matches.extend(batch_matches)
-    return all_matches
+    return ClassificationResult(matches=tuple(all_matches), usage=accumulator)
 
 
 def classify_batch(
     client: Any,
-    config: dict[str, Any],
-    topics: list[Topic],
+    config: LlmConfig,
+    topics: tuple[Topic, ...],
     batch: list[Message],
     accumulator: UsageAccumulator,
-) -> list[dict[str, Any]]:
+) -> list[Match]:
     """Send one message batch to Claude and validate the sparse match response."""
-    llm_config = config.get("llm", {})
-    max_tokens = int(llm_config.get("max_tokens", 4000))
-    retry_max_tokens = int(llm_config.get("retry_max_tokens", max_tokens))
-    if max_tokens <= 0 or retry_max_tokens <= 0:
-        raise ConfigError("llm.max_tokens and llm.retry_max_tokens must be positive.")
-    retry_max_tokens = max(max_tokens, retry_max_tokens)
+    max_tokens = config.max_tokens
+    retry_max_tokens = config.retry_max_tokens
 
     payload = {
-        "topics": [topic.__dict__ for topic in topics],
+        "topics": [asdict(topic) for topic in topics],
         "valid_message_pks": [message.message_pk for message in batch],
-        "messages": [message.__dict__ for message in batch],
+        "messages": [asdict(message) for message in batch],
     }
 
     kwargs = {
-        "model": str(llm_config.get("model", DEFAULT_MODEL)),
+        "model": config.model,
         "max_tokens": max_tokens,
-        "temperature": float(llm_config.get("temperature", 0)),
+        "temperature": config.temperature,
         "system": system_prompt(),
         "messages": [
             {
@@ -105,7 +100,7 @@ def classify_batch(
         ],
     }
 
-    if bool(llm_config.get("use_output_config", True)):
+    if config.use_output_config:
         kwargs["output_config"] = {"format": {"type": "json_schema", "schema": matches_schema()}}
 
     response = None
@@ -231,7 +226,7 @@ def parse_json_response(response: Any) -> dict[str, Any]:
         ) from exc
 
 
-def validate_matches(parsed: Any, message_pks: set[int], topic_ids: set[str]) -> list[dict[str, Any]]:
+def validate_matches(parsed: Any, message_pks: set[int], topic_ids: set[str]) -> list[Match]:
     """Validate Claude matches and drop malformed or hallucinated individual matches."""
     if not isinstance(parsed, dict) or not isinstance(parsed.get("matches"), list):
         raise ClassificationError("Anthropic response must be an object with a matches array.")
@@ -263,13 +258,13 @@ def validate_matches(parsed: Any, message_pks: set[int], topic_ids: set[str]) ->
             continue
 
         valid_matches.append(
-            {
-                "message_pk": message_pk,
-                "topic_id": topic_id,
-                "confidence": confidence,
-                "reason": reason,
-                "notification": notification,
-            }
+            Match(
+                message_pk=message_pk,
+                topic_id=topic_id,
+                confidence=confidence,
+                reason=reason,
+                notification=notification,
+            )
         )
     return valid_matches
 

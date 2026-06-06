@@ -3,9 +3,13 @@ from __future__ import annotations
 import importlib.util
 import logging
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import ModuleType
+from typing import Any
+
+from spotter.config import AppConfig, parse_config
 
 
 def load_spotter_cli() -> ModuleType:
@@ -23,10 +27,39 @@ def load_spotter_cli() -> ModuleType:
     return module
 
 
+def config_dict(temp_dir: Path) -> dict[str, Any]:
+    """Return a complete synthetic Spotter configuration for tests."""
+    return {
+        "whatsapp": {"db_path": str(temp_dir / "ChatStorage.sqlite")},
+        "files": {
+            "state": str(temp_dir / "state.json"),
+            "alerts": str(temp_dir / "alerts.jsonl"),
+            "errors": str(temp_dir / "errors.jsonl"),
+            "usage": str(temp_dir / "usage.jsonl"),
+        },
+        "logging": {"dir": str(temp_dir), "file": "spotter.log", "level": "INFO"},
+        "notifications": {"macos": True, "pushover": False},
+        "topics": [
+            {
+                "id": "example_topic",
+                "name": "Example topic",
+                "description": "A synthetic topic used only by tests.",
+                "threshold": 0.75,
+            }
+        ],
+    }
+
+
+def make_config(temp_dir: Path, raw: dict[str, Any] | None = None) -> AppConfig:
+    """Parse a complete synthetic configuration, optionally supplied by a test."""
+    return parse_config(raw or config_dict(temp_dir))
+
+
 class TestCase(unittest.TestCase):
     """Base test case that prevents application logs from being emitted."""
 
     def setUp(self) -> None:
+        self.temp_dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
         previous_disable_level = logging.root.manager.disable
         logging.disable(logging.CRITICAL)
         self.addCleanup(logging.disable, previous_disable_level)

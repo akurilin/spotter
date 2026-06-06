@@ -27,15 +27,19 @@ Design constraints worth knowing before changing anything:
 
 - `spotter.py` - Main CLI, scan orchestration, alert construction, and state writes.
 - `spotter/classifier.py` - Claude API client: system prompt, JSON schema, batching, retry, parsing, and match validation.
+- `spotter/config.py` - Central Pydantic-based typed configuration loading, defaults, and validation.
 - `spotter/errors.py` - Shared application exception types.
+- `spotter/identity.py` - Shared WhatsApp sender identity normalization and display fallbacks.
 - `spotter/launchagent.py` - LaunchAgent generation, installation, removal, and status inspection.
+- `spotter/models.py` - Shared domain dataclasses passed between scanner subsystems.
 - `spotter/notifications.py` - macOS and Pushover notification delivery and formatting.
 - `spotter/paths.py` - Runtime log and application path resolution.
 - `spotter/preflight.py` - Read-only WhatsApp database access checks.
 - `spotter/tui.py` - Keyboard-first Textual terminal interface.
-- `spotter/types.py` - Shared dataclasses and config helpers (`Topic`, `get_topics`) consumed by orchestrator and classifier.
 - `spotter/usage.py` - Per-run LLM token and scanner usage records.
 - `spotter/whatsapp_db.py` - Read-only WhatsApp SQLite queries and message conversion.
 - `tests/support.py` - Shared unittest helpers and application logging suppression.
 - `tests/test_alerts.py` - Alert deduplication and first-configured-topic regression test.
+- `tests/test_classifier.py` - Classifier response validation and typed match contract tests.
+- `tests/test_config.py` - Typed configuration parsing, defaults, and validation tests.
 - `tests/test_scan.py` - Happy-path scan test with mocked external services and validated temporary filesystem outputs.

@@ -8,8 +8,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from spotter.whatsapp_db import FetchResult, Message
-from tests.support import TestCase, load_spotter_cli
+from spotter.models import ClassificationResult, Match, Message
+from spotter.usage import UsageAccumulator
+from spotter.whatsapp_db import FetchResult
+from tests.support import TestCase, config_dict, load_spotter_cli, make_config
 
 spotter_cli = load_spotter_cli()
 
@@ -24,24 +26,16 @@ class ScanTests(TestCase):
         log_path = temp_dir / "spotter.log"
         state_path.write_text(json.dumps({"last_processed_message_pk": 41}), encoding="utf-8")
 
-        config = {
-            "files": {
-                "state": str(state_path),
-                "alerts": str(alerts_path),
-                "errors": str(errors_path),
-                "usage": str(usage_path),
-            },
-            "logging": {"dir": str(temp_dir), "file": log_path.name, "level": "INFO"},
-            "notifications": {"macos": True, "pushover": False},
-            "topics": [
-                {
-                    "id": "engineering_hiring",
-                    "name": "Engineering hiring",
-                    "description": "Engineering hiring advice",
-                    "threshold": 0.75,
-                }
-            ],
-        }
+        raw_config = config_dict(temp_dir)
+        raw_config["topics"] = [
+            {
+                "id": "engineering_hiring",
+                "name": "Engineering hiring",
+                "description": "Engineering hiring advice",
+                "threshold": 0.75,
+            }
+        ]
+        config = make_config(temp_dir, raw_config)
         message = Message(
             message_pk=42,
             group_name="Founders Community",
@@ -51,18 +45,19 @@ class ScanTests(TestCase):
             local_time="2026-01-02 03:04:05",
             text="What is a good process for hiring an engineering leader?",
         )
-        matches = [
-            {
-                "message_pk": message.message_pk,
-                "topic_id": "engineering_hiring",
-                "confidence": 0.9,
-                "reason": "Founder asks for engineering hiring advice.",
-                "notification": "Founder seeking engineering hiring advice.",
-            }
-        ]
+        matches = (
+            Match(
+                message_pk=message.message_pk,
+                topic_id="engineering_hiring",
+                confidence=0.9,
+                reason="Founder asks for engineering hiring advice.",
+                notification="Founder seeking engineering hiring advice.",
+            ),
+        )
         database = MagicMock()
 
-        def classify_messages(_config, _messages, accumulator):
+        def classify_messages(_llm_config, _batch_size, _topics, _messages):
+            accumulator = UsageAccumulator()
             accumulator.add(
                 SimpleNamespace(
                     input_tokens=100,
@@ -71,7 +66,7 @@ class ScanTests(TestCase):
                     cache_read_input_tokens=5,
                 )
             )
-            return matches
+            return ClassificationResult(matches=matches, usage=accumulator)
 
         def close_log_handlers():
             for handler in list(spotter_cli.LOGGER.handlers):
@@ -81,7 +76,7 @@ class ScanTests(TestCase):
         logging.disable(logging.NOTSET)
         self.addCleanup(close_log_handlers)
         with patch.object(spotter_cli.sys, "stdout", io.StringIO()):
-            spotter_cli.configure_logging(config)
+            spotter_cli.configure_logging(config.logging)
 
         with (
             patch.object(spotter_cli, "open_whatsapp_db", return_value=database),
@@ -110,7 +105,9 @@ class ScanTests(TestCase):
         self.assertEqual(message.message_pk, alerts[0]["message_pk"])
         self.assertEqual("engineering_hiring", alerts[0]["topic_id"])
         self.assertEqual("2026-01-02T03:05:00+00:00", alerts[0]["created_at"])
-        notify_alerts.assert_called_once_with(config, alerts)
+        notify_alerts.assert_called_once()
+        self.assertEqual(config.notifications, notify_alerts.call_args.args[0])
+        self.assertEqual(alerts, [alert.to_dict() for alert in notify_alerts.call_args.args[1]])
 
         state = json.loads(state_path.read_text(encoding="utf-8"))
         self.assertEqual(message.message_pk, state["last_processed_message_pk"])

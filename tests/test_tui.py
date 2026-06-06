@@ -8,7 +8,8 @@ from unittest.mock import patch
 
 from textual.widgets import DataTable, Static, TabbedContent
 
-from spotter.tui import SpotterTui, sort_rows_by_timestamp
+from spotter.tui import SpotterTui, config_display_rows, sort_rows_by_timestamp
+from tests.support import config_dict, make_config
 
 
 class TuiTests(unittest.IsolatedAsyncioTestCase):
@@ -30,10 +31,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 {"started_at": "2026-02-01T00:00:00+00:00", "status": "newest"},
             ],
         )
-        app = SpotterTui(
-            {"files": {"alerts": str(alerts_path), "usage": str(usage_path)}},
-            temp_dir / "config.json",
-        )
+        app = SpotterTui(make_config(temp_dir), temp_dir / "config.json")
 
         with patch.object(app, "refresh_agent_panel"):
             async with app.run_test() as pilot:
@@ -73,10 +71,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
         runs = [{"started_at": "2026-01-01T00:00:00+00:00", "status": "initial"}]
         write_jsonl(alerts_path, alerts)
         write_jsonl(usage_path, runs)
-        app = SpotterTui(
-            {"files": {"alerts": str(alerts_path), "usage": str(usage_path)}},
-            temp_dir / "config.json",
-        )
+        app = SpotterTui(make_config(temp_dir), temp_dir / "config.json")
 
         with patch.object(app, "refresh_agent_panel"):
             async with app.run_test():
@@ -108,33 +103,27 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_config_and_topics_pages_render_separate_configuration_views(self):
         temp_dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        alerts_path = temp_dir / "alerts.jsonl"
-        usage_path = temp_dir / "usage.jsonl"
         config_path = temp_dir / "config.json"
-        config = {
-            "files": {"alerts": str(alerts_path), "usage": str(usage_path)},
-            "notifications": {"macos": True},
-            "service": {"api_token": "do-not-display"},
-            "topics": [
-                {
-                    "id": "priority_topic",
-                    "name": "Priority topic",
-                    "threshold": 0.8,
-                    "description": "First configured topic.",
-                },
-                {
-                    "id": "secondary_topic",
-                    "name": "Secondary topic",
-                    "threshold": 0.7,
-                    "description": (
-                        "Second topic with enough detail to wrap across multiple lines in the default topics table "
-                        "description column while remaining completely readable."
-                    ),
-                },
-            ],
-        }
-        write_json(config_path, config)
-        app = SpotterTui(config, config_path)
+        raw_config = config_dict(temp_dir)
+        raw_config["topics"] = [
+            {
+                "id": "priority_topic",
+                "name": "Priority topic",
+                "threshold": 0.8,
+                "description": "First configured topic.",
+            },
+            {
+                "id": "secondary_topic",
+                "name": "Secondary topic",
+                "threshold": 0.7,
+                "description": (
+                    "Second topic with enough detail to wrap across multiple lines in the default topics table "
+                    "description column while remaining completely readable."
+                ),
+            },
+        ]
+        write_json(config_path, raw_config)
+        app = SpotterTui(make_config(temp_dir, raw_config), config_path)
 
         with patch.object(app, "refresh_agent_panel"):
             async with app.run_test() as pilot:
@@ -148,7 +137,6 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 }
                 self.assertEqual("config", tabs.active)
                 self.assertEqual("true", config_rows["notifications.macos"])
-                self.assertEqual("[redacted]", config_rows["service.api_token"])
                 self.assertFalse(any(setting.startswith("topics") for setting in config_rows))
                 self.assertIs(config_table, app.focused)
 
@@ -177,7 +165,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIs(topics_table, app.focused)
 
                 updated_config = {
-                    **config,
+                    **raw_config,
                     "notifications": {"macos": False},
                     "topics": [
                         {
@@ -222,6 +210,11 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
         sorted_rows = sort_rows_by_timestamp(rows, "created_at", newest_first=False)
 
         self.assertEqual(["same-time-first", "same-time-second", "malformed"], [row["id"] for row in sorted_rows])
+
+    def test_config_display_rows_redacts_sensitive_values(self):
+        rows = dict(config_display_rows({"service": {"api_token": "do-not-display"}}))
+
+        self.assertEqual("[redacted]", rows["service.api_token"])
 
 
 def write_jsonl(path: Path, rows: list[dict[str, str]]) -> None:
