@@ -50,7 +50,7 @@ class CaseResult:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Run manual classifier evals against the live configured Anthropic model."
+        description="Run manual classifier evals against the live configured OpenRouter model."
     )
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES_PATH, help="Path to JSONL eval cases.")
     parser.add_argument("--config", type=Path, default=REPO_ROOT / "config.json", help="Path to spotter config JSON.")
@@ -115,6 +115,12 @@ def main() -> int:
     accumulator = UsageAccumulator()
     results = [run_case(config, accumulator, case) for case in cases]
     print_results(results, accumulator, model=model, temperature=temperature, verbose=args.verbose)
+    if accumulator.input_tokens <= 0 or accumulator.output_tokens <= 0:
+        print(
+            "Live eval failed: OpenRouter response usage did not include positive input/output token counts.",
+            file=sys.stderr,
+        )
+        return 1
     return 0 if all(result.passed for result in results) else 1
 
 

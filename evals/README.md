@@ -1,6 +1,6 @@
 # Manual Classifier Evals
 
-This directory stores model-backed eval cases for classifier regressions. These are not unit tests and should not run in CI: they call the configured Anthropic model and spend real tokens.
+This directory stores model-backed eval cases for classifier regressions. These are not unit tests and should not run in CI: they call the configured model through OpenRouter and spend real tokens.
 
 ## Run
 
@@ -25,12 +25,12 @@ Run one case:
 Compare another model without editing `config.json`:
 
 ```bash
-./.venv/bin/python evals/run_classifier_evals.py --live --model claude-opus-4-8 --omit-temperature
+./.venv/bin/python evals/run_classifier_evals.py --live --model anthropic/claude-opus-4.6 --omit-temperature
 ```
 
-The runner loads `.env`, uses the model and topic definitions from `config.json`, calls the same `classify_messages` path as production, applies topic thresholds through `build_alerts`, and reports pass/fail against the expected alert behavior.
+The runner loads `.env`, uses the model and topic definitions from `config.json`, calls the same `classify_messages` path as production, applies topic thresholds through `build_alerts`, and reports pass/fail against the expected alert behavior. A live run also fails when OpenRouter does not return positive input and output token counts, which validates the production usage-field mapping.
 
-Manual evals require `llm.temperature` to be `0` for maximum reproducibility. Some Anthropic models reject the `temperature` parameter; use `--omit-temperature` or set `llm.temperature` to JSON `null` for those models. To compare models, use `--model` or pass a separate config with `--config`. Secrets are loaded from the repo `.env` by default; pass `--env` if you need a different file.
+Manual evals require `llm.temperature` to be `0` for maximum reproducibility. Some models reject the `temperature` parameter; use `--omit-temperature` or set `llm.temperature` to JSON `null` for those models. To compare models, use an OpenRouter model ID with `--model` or pass a separate config with `--config`. Secrets are loaded from the repo `.env` by default; pass `--env` if you need a different file.
 
 ## Add Cases
 

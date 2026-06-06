@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
+import urllib.error
+import urllib.request
 from dataclasses import asdict
 from typing import Any
 
@@ -11,14 +14,9 @@ from spotter.errors import ClassificationError
 from spotter.models import ClassificationResult, Match, Message
 from spotter.usage import UsageAccumulator
 
-try:
-    from anthropic import Anthropic, APIConnectionError, APIStatusError, APITimeoutError
-except ImportError:  # pragma: no cover - handled at runtime for clear setup errors.
-    Anthropic = None  # type: ignore[assignment]
-    APIConnectionError = APIStatusError = APITimeoutError = Exception  # type: ignore[misc,assignment]
-
-
 LOGGER = logging.getLogger("spotter")
+OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
+TRANSIENT_HTTP_STATUSES = {408, 409, 429, 500, 502, 503, 504}
 
 
 def classify_messages(
@@ -27,25 +25,19 @@ def classify_messages(
     topics: tuple[Topic, ...],
     messages: list[Message],
 ) -> ClassificationResult:
-    """Classify messages with Claude in configured batches and return matches with usage."""
-    if Anthropic is None:
-        raise ClassificationError("Missing dependency: install requirements in .venv first.")
-
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    """Classify messages with OpenRouter in configured batches and return matches with usage."""
+    api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
-        raise ClassificationError("ANTHROPIC_API_KEY is not set. Add it to .env.")
-
-    client = Anthropic(
-        api_key=api_key,
-        timeout=config.timeout_seconds,
-        max_retries=config.max_retries,
-    )
+        raise ClassificationError("OPENROUTER_API_KEY is not set. Add it to .env.")
 
     accumulator = UsageAccumulator()
     all_matches: list[Match] = []
     batches = chunks(messages, batch_size)
     LOGGER.info(
-        "Claude classification starting: model=%s batches=%s messages=%s", config.model, len(batches), len(messages)
+        "OpenRouter classification starting: model=%s batches=%s messages=%s",
+        config.model,
+        len(batches),
+        len(messages),
     )
     for batch_index, batch in enumerate(batches, start=1):
         LOGGER.info(
@@ -59,7 +51,7 @@ def classify_messages(
             batch[-1].local_time,
         )
         try:
-            batch_matches = classify_batch(client, config, topics, batch, accumulator)
+            batch_matches = classify_batch(api_key, config, topics, batch, accumulator)
         except ClassificationError as exc:
             raise ClassificationError(
                 f"Batch {batch_index}/{len(batches)} failed "
@@ -71,91 +63,195 @@ def classify_messages(
 
 
 def classify_batch(
-    client: Any,
+    api_key: str,
     config: LlmConfig,
     topics: tuple[Topic, ...],
     batch: list[Message],
     accumulator: UsageAccumulator,
 ) -> list[Match]:
-    """Send one message batch to Claude and validate the sparse match response."""
+    """Send one message batch through OpenRouter and validate the sparse match response."""
     max_tokens = config.max_tokens
     retry_max_tokens = config.retry_max_tokens
-
-    payload = {
+    input_payload = {
         "topics": [topic.model_dump() for topic in topics],
         "valid_message_pks": [message.message_pk for message in batch],
         "messages": [asdict(message) for message in batch],
     }
-
-    kwargs = {
+    request_payload: dict[str, Any] = {
         "model": config.model,
         "max_tokens": max_tokens,
-        "system": system_prompt(),
         "messages": [
-            {
-                "role": "user",
-                "content": json.dumps(payload, ensure_ascii=False),
-            }
+            {"role": "system", "content": system_prompt()},
+            {"role": "user", "content": json.dumps(input_payload, ensure_ascii=False)},
         ],
+        "provider": {
+            "require_parameters": True,
+            "data_collection": "deny",
+        },
     }
     if config.temperature is not None:
-        kwargs["temperature"] = config.temperature
-
-    if config.use_output_config:
-        kwargs["output_config"] = {"format": {"type": "json_schema", "schema": matches_schema()}}
+        request_payload["temperature"] = config.temperature
+    if config.use_structured_output:
+        request_payload["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "matches",
+                "strict": True,
+                "schema": matches_schema(),
+            },
+        }
 
     response = None
-    try:
-        for attempt_index, attempt_max_tokens in enumerate([max_tokens, retry_max_tokens], start=1):
-            kwargs["max_tokens"] = attempt_max_tokens
-            response = create_message_with_optional_output_config(client, kwargs)
-            if response_stop_reason(response) != "max_tokens":
-                break
-            if attempt_max_tokens >= retry_max_tokens:
-                raise ClassificationError(
-                    "Anthropic response hit max_tokens before producing complete JSON "
-                    f"(max_tokens={attempt_max_tokens}). Increase llm.retry_max_tokens or lower whatsapp.batch_size."
-                )
-            LOGGER.warning(
-                "Anthropic response hit max_tokens on attempt %s; retrying with max_tokens=%s.",
-                attempt_index,
-                retry_max_tokens,
+    for attempt_index, attempt_max_tokens in enumerate([max_tokens, retry_max_tokens], start=1):
+        request_payload["max_tokens"] = attempt_max_tokens
+        response = post_openrouter(
+            dict(request_payload),
+            api_key=api_key,
+            timeout_seconds=config.timeout_seconds,
+            max_retries=config.max_retries,
+        )
+        if response_finish_reason(response) != "length":
+            break
+        if attempt_max_tokens >= retry_max_tokens:
+            raise ClassificationError(
+                "OpenRouter response hit the output token limit before producing complete JSON "
+                f"(max_tokens={attempt_max_tokens}). Increase llm.retry_max_tokens or lower whatsapp.batch_size."
             )
-    except (APIConnectionError, APITimeoutError) as exc:
-        raise ClassificationError(f"Anthropic connection failure after retries: {exc}") from exc
-    except APIStatusError as exc:
-        status_code = getattr(exc, "status_code", "unknown")
-        request_id = getattr(exc, "request_id", None)
-        suffix = f" request_id={request_id}" if request_id else ""
-        raise ClassificationError(f"Anthropic API status error {status_code}.{suffix} {exc}") from exc
+        LOGGER.warning(
+            "OpenRouter response hit the output token limit on attempt %s; retrying with max_tokens=%s.",
+            attempt_index,
+            retry_max_tokens,
+        )
 
     if response is None:
-        raise ClassificationError("Anthropic returned no response.")
+        raise ClassificationError("OpenRouter returned no response.")
 
-    accumulator.add(getattr(response, "usage", None))
-
-    parsed = getattr(response, "parsed_output", None)
-    if parsed is None:
-        parsed = parse_json_response(response)
-
+    accumulator.add(response.get("usage"))
+    parsed = parse_json_response(response)
     return validate_matches(parsed, {message.message_pk for message in batch}, {topic.id for topic in topics})
 
 
-def create_message_with_optional_output_config(client: Any, kwargs: dict[str, Any]) -> Any:
-    """Create an Anthropic message, falling back if the SDK lacks output_config support."""
+def post_openrouter(
+    payload: dict[str, Any],
+    *,
+    api_key: str,
+    timeout_seconds: float,
+    max_retries: int,
+) -> dict[str, Any]:
+    """POST one non-streaming chat completion and retry transient OpenRouter failures."""
+    request_body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "X-OpenRouter-Title": "spotter",
+    }
+
+    for attempt in range(max_retries + 1):
+        http_request = urllib.request.Request(OPENROUTER_CHAT_URL, data=request_body, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(http_request, timeout=timeout_seconds) as response:
+                response_body = response.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            response_body = exc.read().decode("utf-8", errors="replace")
+            if exc.code in TRANSIENT_HTTP_STATUSES and attempt < max_retries:
+                retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                sleep_before_retry(attempt, retry_after=retry_after)
+                continue
+            raise ClassificationError(format_http_error(exc.code, response_body)) from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            if attempt < max_retries:
+                sleep_before_retry(attempt)
+                continue
+            reason = getattr(exc, "reason", exc)
+            raise ClassificationError(f"OpenRouter connection failure after retries: {reason}") from exc
+
+        response_json = decode_openrouter_json(response_body)
+        error = response_error(response_json)
+        if error is None:
+            return response_json
+        if is_transient_error(error) and attempt < max_retries:
+            sleep_before_retry(attempt)
+            continue
+        raise ClassificationError(format_openrouter_error(error))
+
+    raise ClassificationError("OpenRouter request failed after retries.")
+
+
+def sleep_before_retry(attempt: int, retry_after: str | None = None) -> None:
+    """Sleep before a transient request retry, honoring numeric Retry-After values."""
+    delay = retry_delay_seconds(attempt, retry_after)
+    LOGGER.warning("OpenRouter request failed transiently; retrying in %.1f seconds.", delay)
+    time.sleep(delay)
+
+
+def retry_delay_seconds(attempt: int, retry_after: str | None) -> float:
+    """Return a bounded numeric Retry-After value or an exponential fallback."""
+    if retry_after:
+        try:
+            return min(max(float(retry_after), 0), 120)
+        except ValueError:
+            pass
+    return min(2**attempt, 30)
+
+
+def decode_openrouter_json(response_body: str) -> dict[str, Any]:
+    """Decode an OpenRouter response body and require a top-level JSON object."""
     try:
-        return client.messages.create(**kwargs)
-    except TypeError as exc:
-        if "output_config" not in str(exc):
-            raise
-        fallback_kwargs = dict(kwargs)
-        fallback_kwargs.pop("output_config", None)
-        return client.messages.create(**fallback_kwargs)
+        parsed = json.loads(response_body)
+    except json.JSONDecodeError as exc:
+        raise ClassificationError("OpenRouter returned a non-JSON response.") from exc
+    if not isinstance(parsed, dict):
+        raise ClassificationError("OpenRouter response must be a JSON object.")
+    return parsed
 
 
-def response_stop_reason(response: Any) -> str | None:
-    """Return Claude's stop reason when present."""
-    value = getattr(response, "stop_reason", None)
+def format_http_error(status_code: int, response_body: str) -> str:
+    """Format an HTTP error without leaking provider metadata or message contents."""
+    try:
+        parsed = json.loads(response_body)
+    except json.JSONDecodeError:
+        parsed = None
+    error = parsed.get("error") if isinstance(parsed, dict) else None
+    if isinstance(error, dict):
+        message = str(error.get("message", "unknown error")).strip()
+        return f"OpenRouter HTTP {status_code}: {message[:500]}"
+    return f"OpenRouter HTTP {status_code}: non-JSON error response."
+
+
+def response_error(response: dict[str, Any]) -> dict[str, Any] | None:
+    """Return a top-level or choice-level OpenRouter error when present."""
+    error = response.get("error")
+    if isinstance(error, dict):
+        return error
+    choices = response.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        choice_error = choices[0].get("error")
+        if isinstance(choice_error, dict):
+            return choice_error
+    return None
+
+
+def is_transient_error(error: dict[str, Any]) -> bool:
+    """Return whether an embedded OpenRouter error is suitable for retry."""
+    code = error.get("code")
+    if isinstance(code, int):
+        return code in TRANSIENT_HTTP_STATUSES
+    return str(code).lower() in {"server_error", "provider_error", "provider_unavailable"}
+
+
+def format_openrouter_error(error: dict[str, Any]) -> str:
+    """Format an embedded OpenRouter error without provider metadata."""
+    code = error.get("code", "unknown")
+    message = str(error.get("message", "unknown error")).strip()
+    return f"OpenRouter API error {code}: {message[:500]}"
+
+
+def response_finish_reason(response: dict[str, Any]) -> str | None:
+    """Return OpenRouter's normalized finish reason when present."""
+    choices = response.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return None
+    value = choices[0].get("finish_reason")
     return str(value) if value is not None else None
 
 
@@ -182,7 +278,7 @@ def system_prompt() -> str:
 
 
 def matches_schema() -> dict[str, Any]:
-    """Return the JSON schema requested from Claude for structured match output."""
+    """Return the JSON schema requested from OpenRouter for structured match output."""
     return {
         "type": "object",
         "additionalProperties": False,
@@ -207,37 +303,40 @@ def matches_schema() -> dict[str, Any]:
     }
 
 
-def parse_json_response(response: Any) -> dict[str, Any]:
-    """Parse a non-structured Claude response body as JSON."""
-    text_parts = []
-    for block in getattr(response, "content", []):
-        text = getattr(block, "text", None)
-        if text:
-            text_parts.append(text)
-
-    raw_text = "".join(text_parts).strip()
-    if not raw_text:
-        raise ClassificationError("Anthropic returned no text content.")
-    if response_stop_reason(response) == "max_tokens":
+def parse_json_response(response: dict[str, Any]) -> dict[str, Any]:
+    """Parse the first non-streaming OpenRouter chat completion as JSON."""
+    choices = response.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        raise ClassificationError("OpenRouter response must contain a non-empty choices array.")
+    message = choices[0].get("message")
+    if not isinstance(message, dict):
+        raise ClassificationError("OpenRouter response choice must contain a message object.")
+    raw_text = message.get("content")
+    if not isinstance(raw_text, str) or not raw_text.strip():
+        raise ClassificationError("OpenRouter returned no text content.")
+    raw_text = raw_text.strip()
+    if response_finish_reason(response) == "length":
         raise ClassificationError(
-            "Anthropic response hit max_tokens before valid JSON could be parsed. "
+            "OpenRouter response hit the output token limit before valid JSON could be parsed. "
             "Increase llm.max_tokens/llm.retry_max_tokens or lower whatsapp.batch_size."
         )
-
     try:
-        return json.loads(raw_text)
+        parsed = json.loads(raw_text)
     except json.JSONDecodeError as exc:
         preview = raw_text[-500:] if len(raw_text) > 500 else raw_text
         raise ClassificationError(
-            f"Could not parse Anthropic JSON response: {exc}. stop_reason={response_stop_reason(response)} "
+            f"Could not parse OpenRouter JSON response: {exc}. finish_reason={response_finish_reason(response)} "
             f"response_chars={len(raw_text)} tail={preview!r}"
         ) from exc
+    if not isinstance(parsed, dict):
+        raise ClassificationError("OpenRouter model output must be a JSON object.")
+    return parsed
 
 
 def validate_matches(parsed: Any, message_pks: set[int], topic_ids: set[str]) -> list[Match]:
-    """Validate Claude matches and drop malformed or hallucinated individual matches."""
+    """Validate model matches and drop malformed or hallucinated individual matches."""
     if not isinstance(parsed, dict) or not isinstance(parsed.get("matches"), list):
-        raise ClassificationError("Anthropic response must be an object with a matches array.")
+        raise ClassificationError("OpenRouter response must be an object with a matches array.")
 
     valid_matches = []
     for item in parsed["matches"]:
@@ -248,7 +347,7 @@ def validate_matches(parsed: Any, message_pks: set[int], topic_ids: set[str]) ->
             message_pk = int(item.get("message_pk"))
             confidence = float(item.get("confidence"))
         except (TypeError, ValueError):
-            LOGGER.warning("Ignoring malformed Anthropic match: %s", item)
+            LOGGER.warning("Ignoring malformed OpenRouter match: %s", item)
             continue
 
         topic_id = str(item.get("topic_id", ""))
@@ -256,13 +355,13 @@ def validate_matches(parsed: Any, message_pks: set[int], topic_ids: set[str]) ->
         notification = str(item.get("notification", "")).strip()
 
         if message_pk not in message_pks:
-            LOGGER.warning("Ignoring Anthropic match with unknown message_pk: %s", message_pk)
+            LOGGER.warning("Ignoring OpenRouter match with unknown message_pk: %s", message_pk)
             continue
         if topic_id not in topic_ids:
-            LOGGER.warning("Ignoring Anthropic match with unknown topic_id: %s", topic_id)
+            LOGGER.warning("Ignoring OpenRouter match with unknown topic_id: %s", topic_id)
             continue
         if not 0 <= confidence <= 1:
-            LOGGER.warning("Ignoring Anthropic match with invalid confidence: %s", confidence)
+            LOGGER.warning("Ignoring OpenRouter match with invalid confidence: %s", confidence)
             continue
 
         valid_matches.append(

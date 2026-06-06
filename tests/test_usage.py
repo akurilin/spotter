@@ -5,6 +5,31 @@ from tests.support import TestCase
 
 
 class UsageTests(TestCase):
+    def test_add_maps_openrouter_usage_fields(self):
+        total = UsageAccumulator()
+
+        total.add(
+            {
+                "prompt_tokens": 100,
+                "completion_tokens": 20,
+                "prompt_tokens_details": {
+                    "cache_write_tokens": 10,
+                    "cached_tokens": 5,
+                },
+            }
+        )
+
+        self.assertEqual(
+            UsageAccumulator(
+                batches=1,
+                input_tokens=100,
+                output_tokens=20,
+                cache_creation_input_tokens=10,
+                cache_read_input_tokens=5,
+            ),
+            total,
+        )
+
     def test_merge_adds_all_accumulated_usage(self):
         total = UsageAccumulator(batches=1, input_tokens=10, output_tokens=2)
         additional = UsageAccumulator(

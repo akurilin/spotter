@@ -2,11 +2,11 @@
 
 `spotter` is a local, single-user macOS CLI that watches WhatsApp group chats for messages matching topics the user defines in plain English, and pings them via macOS Notification Center and/or Pushover when something relevant comes through. The point is to keep noisy WhatsApp groups muted without missing the few high-signal messages that actually matter (job leads, deal mentions, a specific name dropped in a 200-person channel).
 
-Operationally it reads the WhatsApp desktop app's `ChatStorage.sqlite` in read-only mode, pulls new group messages since a cursor stored in `state.json`, sends them in batches to the Claude API with the configured topic descriptions, and writes validated matches to `alerts.jsonl` before firing notifications. The cursor only advances when every batch in a run succeeds, so transient API or rate-limit failures cause the next run to retry the same messages rather than silently drop them. A LaunchAgent runs the scan periodically; a Textual TUI shows run/alert/usage history.
+Operationally it reads the WhatsApp desktop app's `ChatStorage.sqlite` in read-only mode, pulls new group messages since a cursor stored in `state.json`, sends them in batches to OpenRouter's Chat Completions API with the configured topic descriptions, and writes validated matches to `alerts.jsonl` before firing notifications. The cursor only advances when every batch in a run succeeds, so transient API or rate-limit failures cause the next run to retry the same messages rather than silently drop them. A LaunchAgent runs the scan periodically; a Textual TUI shows run/alert/usage history.
 
 Design constraints worth knowing before changing anything:
 - The WhatsApp database is opened with SQLite URI `mode=ro` — never modify WhatsApp files.
-- Single user, single machine, single LLM provider (Anthropic). No multi-tenancy or provider abstraction.
+- Single user, single machine, single LLM gateway (OpenRouter). No multi-tenancy or provider abstraction.
 - Every WhatsApp message is treated as untrusted input; validated matches must reference a `message_pk` from the current batch and a `topic_id` from `config.json`.
 - `README.md` has the full architecture, configuration model, and end-to-end scan flow if more context is needed.
 
@@ -27,7 +27,7 @@ Design constraints worth knowing before changing anything:
 
 - `spotter.py` - Main CLI, scan orchestration, state writes, and error recording.
 - `spotter/alerts.py` - Alert thresholding, topic-priority selection, deduplication, and formatting.
-- `spotter/classifier.py` - Claude API client: system prompt, JSON schema, batching, retry, parsing, and match validation.
+- `spotter/classifier.py` - Direct OpenRouter HTTP client: system prompt, JSON schema, batching, retry, parsing, and match validation.
 - `spotter/config.py` - Central Pydantic-based typed configuration loading, defaults, and validation.
 - `spotter/errors.py` - Shared application exception types.
 - `spotter/identity.py` - Shared WhatsApp sender identity normalization and display fallbacks.
@@ -44,7 +44,7 @@ Design constraints worth knowing before changing anything:
 - `evals/run_classifier_evals.py` - Manual live classifier eval runner and result reporting.
 - `tests/support.py` - Shared unittest helpers and application logging suppression.
 - `tests/test_alerts.py` - Alert deduplication and first-configured-topic regression test.
-- `tests/test_classifier.py` - Classifier response validation and typed match contract tests.
+- `tests/test_classifier.py` - OpenRouter request, retry, usage, response validation, and typed match contract tests.
 - `tests/test_config.py` - Typed configuration parsing, defaults, and validation tests.
 - `tests/test_scan.py` - Happy-path scan test with mocked external services and validated temporary filesystem outputs.
 - `tests/test_tui.py` - TUI navigation, sorting, refresh, configuration display, and redaction tests.

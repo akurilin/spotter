@@ -7,13 +7,13 @@
     "batch_size": 100
   },
   "llm": {
-    "model": "claude-sonnet-4-6",
+    "model": "anthropic/claude-sonnet-4.6",
     "max_tokens": 4000,
     "retry_max_tokens": 8000,
     "temperature": 0,
     "timeout_seconds": 120,
     "max_retries": 3,
-    "use_output_config": true
+    "use_structured_output": true
   },
   "notifications": {
     "macos": true,

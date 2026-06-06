@@ -1,3 +1,2 @@
-anthropic>=0.74.0
 pydantic>=2.13.4,<3
 textual>=6.6.0

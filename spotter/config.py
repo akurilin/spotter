@@ -20,7 +20,7 @@ from pydantic import (
 
 from spotter.errors import ConfigError
 
-DEFAULT_MODEL = "claude-sonnet-4-6"
+DEFAULT_MODEL = "anthropic/claude-sonnet-4.6"
 
 
 def load_env_file(path: Path) -> None:
@@ -91,7 +91,7 @@ class LlmConfig(ConfigModel):
     temperature: float | None = 0
     timeout_seconds: PositiveFloat = 120
     max_retries: NonNegativeInt = 3
-    use_output_config: bool = True
+    use_structured_output: bool = True
 
     @model_validator(mode="after")
     def validate_retry_max_tokens(self) -> Self:

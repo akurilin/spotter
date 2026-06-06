@@ -2,14 +2,14 @@
 
 Writes one JSON Lines row per scanner run, capturing token counts (split by
 type so USD can be derived from a pricing table at query time), message
-counts, model, and outcome. Token type names mirror Anthropic's
-``response.usage`` fields verbatim.
+counts, model, and outcome.
 """
 
 from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
@@ -17,7 +17,7 @@ from typing import Any
 
 @dataclass
 class UsageAccumulator:
-    """Sum token usage and batch counts across Anthropic responses in one run."""
+    """Sum token usage and batch counts across model responses in one run."""
 
     batches: int = 0
     input_tokens: int = 0
@@ -26,8 +26,18 @@ class UsageAccumulator:
     cache_read_input_tokens: int = 0
 
     def add(self, usage: Any) -> None:
-        """Add tokens from one ``response.usage`` object returned by the Anthropic SDK."""
+        """Add tokens from one OpenRouter usage mapping or compatible object."""
         self.batches += 1
+        if isinstance(usage, Mapping):
+            prompt_details = usage.get("prompt_tokens_details")
+            if not isinstance(prompt_details, Mapping):
+                prompt_details = {}
+            self.input_tokens += int(usage.get("prompt_tokens", 0) or 0)
+            self.output_tokens += int(usage.get("completion_tokens", 0) or 0)
+            self.cache_creation_input_tokens += int(prompt_details.get("cache_write_tokens", 0) or 0)
+            self.cache_read_input_tokens += int(prompt_details.get("cached_tokens", 0) or 0)
+            return
+
         self.input_tokens += int(getattr(usage, "input_tokens", 0) or 0)
         self.output_tokens += int(getattr(usage, "output_tokens", 0) or 0)
         self.cache_creation_input_tokens += int(getattr(usage, "cache_creation_input_tokens", 0) or 0)

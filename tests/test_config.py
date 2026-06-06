@@ -30,12 +30,12 @@ class ConfigTests(TestCase):
 
     def test_parse_config_is_strict_and_rejects_unknown_settings(self):
         raw = config_dict(self.temp_dir)
-        raw["llm"] = {"max_tokens": "4000", "provider": "anthropic"}
+        raw["llm"] = {"max_tokens": "4000", "provider": "openrouter"}
 
         with self.assertRaisesRegex(ConfigError, "extra_forbidden"):
             parse_config(raw)
 
-    def test_parse_config_allows_omitting_temperature_from_anthropic_request(self):
+    def test_parse_config_allows_omitting_temperature_from_model_request(self):
         raw = config_dict(self.temp_dir)
         raw["llm"] = {"temperature": None}
 
