@@ -13,8 +13,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from spotter.config import NotificationConfig
 from spotter.errors import NotificationError
-from spotter.whatsapp_db import clean_sender_name, sender_name_from_jid
+from spotter.identity import clean_sender_name, sender_name_from_jid
+from spotter.models import Alert
 
 LOGGER = logging.getLogger("spotter")
 
@@ -29,81 +31,79 @@ class NotificationFailure:
     error: str
 
 
-def notify_alerts(config: dict[str, Any], alerts: list[dict[str, Any]]) -> list[NotificationFailure]:
+def notify_alerts(config: NotificationConfig, alerts: list[Alert]) -> list[NotificationFailure]:
     """Send configured local notifications for each alert row."""
-    notification_config = config.get("notifications", {})
-    title = str(notification_config.get("title", "WhatsApp topic match"))
-    max_body_chars = int(notification_config.get("max_body_chars", 180))
-    macos_enabled = bool(notification_config.get("macos", True))
-    pushover_enabled = bool(notification_config.get("pushover", False))
     failures: list[NotificationFailure] = []
-    LOGGER.info("Sending notifications: alerts=%s macos=%s pushover=%s", len(alerts), macos_enabled, pushover_enabled)
+    LOGGER.info("Sending notifications: alerts=%s macos=%s pushover=%s", len(alerts), config.macos, config.pushover)
 
     for alert in alerts:
         subtitle = format_notification_subtitle(alert)
-        body = format_notification_body(alert, max_body_chars)
+        body = format_notification_body(alert, config.max_body_chars)
 
-        if macos_enabled:
+        if config.macos:
             try:
                 send_macos_notification(
-                    title,
+                    config.title,
                     body,
                     subtitle=subtitle,
-                    sound_name=notification_config.get("sound_name"),
+                    sound_name=config.sound_name,
                 )
             except (OSError, subprocess.CalledProcessError) as exc:
-                LOGGER.warning("macOS notification failed for message %s: %s", alert["message_pk"], exc)
+                LOGGER.warning("macOS notification failed for message %s: %s", alert.message_pk, exc)
                 failures.append(build_notification_failure("macos", alert, exc))
 
-        if pushover_enabled:
+        if config.pushover:
             try:
-                send_pushover_notification(title, body, subtitle=subtitle, notification_config=notification_config)
+                send_pushover_notification(config.title, body, subtitle=subtitle, config=config)
             except NotificationError as exc:
-                LOGGER.warning("Pushover notification failed for message %s: %s", alert["message_pk"], exc)
+                LOGGER.warning("Pushover notification failed for message %s: %s", alert.message_pk, exc)
                 failures.append(build_notification_failure("pushover", alert, exc))
 
-    successful_delivery_count = (
-        (len(alerts) * int(macos_enabled)) + (len(alerts) * int(pushover_enabled)) - len(failures)
-    )
+    successful_delivery_count = (len(alerts) * int(config.macos)) + (len(alerts) * int(config.pushover)) - len(failures)
     LOGGER.info("Notification delivery complete: successes=%s failures=%s", successful_delivery_count, len(failures))
     return failures
 
 
-def build_notification_failure(backend: str, alert: dict[str, Any], exc: Exception) -> NotificationFailure:
+def build_notification_failure(backend: str, alert: Alert, exc: Exception) -> NotificationFailure:
     """Build a structured notification failure record without storing message text."""
     return NotificationFailure(
         backend=backend,
-        message_pk=int(alert["message_pk"]),
-        topic_id=str(alert["topic_id"]),
-        topic_name=str(alert["topic_name"]),
-        group_name=str(alert["group_name"]),
+        message_pk=alert.message_pk,
+        topic_id=alert.topic_id,
+        topic_name=alert.topic_name,
+        group_name=alert.group_name,
         error=str(exc),
     )
 
 
-def send_test_notifications(config: dict[str, Any]) -> None:
+def send_test_notifications(config: NotificationConfig) -> None:
     """Send one sample notification through every enabled notification backend."""
-    notification_config = config.get("notifications", {})
-    title = str(notification_config.get("title", "WhatsApp topic match"))
-    max_body_chars = int(notification_config.get("max_body_chars", 180))
-    sample_alert = {
-        "created_at": datetime.now(UTC).astimezone().isoformat(timespec="seconds"),
-        "topic_name": "Engineering hiring",
-        "group_name": "YC CTOs (active)",
-        "sender_name": "Ali",
-        "text": (
+    sample_alert = Alert(
+        created_at=datetime.now(UTC).astimezone().isoformat(timespec="seconds"),
+        message_pk=0,
+        topic_id="test",
+        topic_name="Engineering hiring",
+        confidence=1,
+        reason="Test notification",
+        notification="Test notification",
+        group_name="Example group",
+        group_jid="",
+        sender_name="Ali",
+        sender_jid=None,
+        local_time="",
+        text=(
             "I am trying to design a better interview loop for founding AI engineers. "
             "Has anyone found a practical way to test judgment without a take-home?"
         ),
-    }
+    )
     subtitle = format_notification_subtitle(sample_alert)
-    body = format_notification_body(sample_alert, max_body_chars)
+    body = format_notification_body(sample_alert, config.max_body_chars)
 
-    if notification_config.get("macos", True):
-        send_macos_notification(title, body, subtitle=subtitle, sound_name=notification_config.get("sound_name"))
+    if config.macos:
+        send_macos_notification(config.title, body, subtitle=subtitle, sound_name=config.sound_name)
 
-    if notification_config.get("pushover", False):
-        send_pushover_notification(title, body, subtitle=subtitle, notification_config=notification_config)
+    if config.pushover:
+        send_pushover_notification(config.title, body, subtitle=subtitle, config=config)
 
 
 def send_macos_notification(title: str, body: str, subtitle: Any = None, sound_name: Any = None) -> None:
@@ -148,7 +148,7 @@ def send_pushover_notification(
     title: str,
     body: str,
     subtitle: Any = None,
-    notification_config: dict[str, Any] | None = None,
+    config: NotificationConfig | None = None,
 ) -> None:
     """Send an iOS/mobile notification through Pushover."""
     app_token = (
@@ -158,7 +158,6 @@ def send_pushover_notification(
     if not app_token or not user_key:
         raise NotificationError("Pushover is enabled but PUSHOVER_APP_TOKEN and PUSHOVER_USER_KEY are not set.")
 
-    config = notification_config or {}
     message = body if not subtitle else f"{subtitle}\n{body}"
     payload: dict[str, Any] = {
         "token": app_token,
@@ -168,14 +167,13 @@ def send_pushover_notification(
     }
 
     optional_fields = {
-        "device": "pushover_device",
-        "priority": "pushover_priority",
-        "sound": "pushover_sound_name",
-        "url": "pushover_url",
-        "url_title": "pushover_url_title",
+        "device": config.pushover_device if config else None,
+        "priority": config.pushover_priority if config else None,
+        "sound": config.pushover_sound_name if config else None,
+        "url": config.pushover_url if config else None,
+        "url_title": config.pushover_url_title if config else None,
     }
-    for pushover_key, config_key in optional_fields.items():
-        value = config.get(config_key)
+    for pushover_key, value in optional_fields.items():
         if value is not None and str(value) != "":
             payload[pushover_key] = value
 
@@ -207,21 +205,19 @@ def send_pushover_notification(
         raise NotificationError(f"Pushover rejected notification: {errors}")
 
 
-def format_notification_subtitle(alert: dict[str, Any]) -> str:
+def format_notification_subtitle(alert: Alert) -> str:
     """Format the topic and group context shown below the notification title."""
-    parts = [str(alert["topic_name"]), str(alert["group_name"])]
-    notified_at = format_human_datetime(alert.get("created_at"))
+    parts = [alert.topic_name, alert.group_name]
+    notified_at = format_human_datetime(alert.created_at)
     if notified_at:
         parts.append(f"Notified {notified_at}")
     return " | ".join(parts)
 
 
-def format_notification_body(alert: dict[str, Any], max_chars: int) -> str:
+def format_notification_body(alert: Alert, max_chars: int) -> str:
     """Format and truncate the sender and message text shown in a macOS notification."""
-    text = str(alert["text"]).replace("\n", " ")
-    sender_name = clean_sender_name(alert.get("sender_name")) or sender_name_from_jid(
-        str(alert.get("sender_jid") or "")
-    )
+    text = alert.text.replace("\n", " ")
+    sender_name = clean_sender_name(alert.sender_name) or sender_name_from_jid(alert.sender_jid)
     body = f"{sender_name or 'Unknown sender'}: {text}"
     if len(body) <= max_chars:
         return body

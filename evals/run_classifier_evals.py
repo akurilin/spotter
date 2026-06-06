@@ -6,7 +6,7 @@ import importlib.util
 import json
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -94,7 +94,8 @@ def main() -> int:
     config_path = spotter_cli.resolve_config_path(args.config)
     spotter_cli.load_env_file(args.env.expanduser().resolve())
     config = spotter_cli.load_config(config_path)
-    model, temperature = llm_settings(spotter_cli, config)
+    model = config.llm.model
+    temperature = config.llm.temperature
     if temperature not in (0, None):
         print(
             "Refusing to run classifier evals with non-zero llm.temperature. "
@@ -102,7 +103,7 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
-    validate_case_topics(cases, {topic.id for topic in spotter_cli.get_topics(config)})
+    validate_case_topics(cases, {topic.id for topic in config.topics})
 
     accumulator = spotter_cli.UsageAccumulator()
     results = [run_case(spotter_cli, config, accumulator, case) for case in cases]
@@ -203,19 +204,30 @@ def validate_case_topics(cases: list[EvalCase], topic_ids: set[str]) -> None:
         )
 
 
-def llm_settings(spotter_cli: Any, config: dict[str, Any]) -> tuple[str, float | None]:
-    llm_config = config.get("llm", {})
-    default_model = getattr(spotter_cli, "DEFAULT_MODEL", "claude-sonnet-4-6")
-    temperature = llm_config.get("temperature", 0)
-    return str(llm_config.get("model", default_model)), None if temperature is None else float(temperature)
-
-
-def run_case(spotter_cli: Any, config: dict[str, Any], accumulator: Any, case: EvalCase) -> CaseResult:
-    messages = [spotter_cli.Message(**message.__dict__) for message in case.messages]
-    raw_matches = spotter_cli.classify_messages(config, messages, accumulator)
-    alerts = spotter_cli.build_alerts(config, messages, raw_matches, existing_alert_keys=set())
+def run_case(spotter_cli: Any, config: Any, accumulator: Any, case: EvalCase) -> CaseResult:
+    messages = [spotter_cli.Message(**asdict(message)) for message in case.messages]
+    classification = spotter_cli.classify_messages(config.llm, config.whatsapp.batch_size, config.topics, messages)
+    accumulate_usage(accumulator, classification.usage)
+    raw_matches = [asdict(match) for match in classification.matches]
+    alerts = [
+        alert.to_dict()
+        for alert in spotter_cli.build_alerts(
+            config.topics, messages, classification.matches, existing_alert_keys=set()
+        )
+    ]
     failures = evaluate_case(case, alerts)
     return CaseResult(case=case, passed=not failures, failures=failures, raw_matches=raw_matches, alerts=alerts)
+
+
+def accumulate_usage(accumulator: Any, usage: Any) -> None:
+    for field in (
+        "batches",
+        "input_tokens",
+        "output_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+    ):
+        setattr(accumulator, field, getattr(accumulator, field) + getattr(usage, field))
 
 
 def evaluate_case(case: EvalCase, alerts: list[dict[str, Any]]) -> list[str]:

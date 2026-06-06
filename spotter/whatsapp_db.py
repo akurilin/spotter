@@ -1,49 +1,34 @@
 """Read-only access to the local WhatsApp macOS SQLite database.
 
-Owns the SQL queries, the row → :class:`Message` conversion, and the sender-name
-and group-filter helpers that only make sense in the context of WhatsApp's
-schema.
+Owns the SQL queries and row → :class:`Message` conversion.
 """
 
 from __future__ import annotations
 
-import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
+from spotter.config import WhatsAppConfig
 from spotter.errors import ConfigError
+from spotter.identity import clean_sender_jid, clean_sender_name, is_phone_display_name, sender_name_from_jid
+from spotter.models import Message
 
 APPLE_EPOCH_OFFSET_SECONDS = 978_307_200
-BASE64ISH_SENDER_RE = re.compile(r"^[A-Za-z0-9+/]{4,}={0,2}$")
-JID_SUFFIXES = ("@s.whatsapp.net", "@lid", "@g.us", "@status")
-
-
-@dataclass(frozen=True)
-class Message:
-    message_pk: int
-    group_name: str
-    group_jid: str
-    sender_name: str
-    sender_jid: str | None
-    local_time: str
-    text: str
 
 
 @dataclass(frozen=True)
 class FetchResult:
     messages: list[Message]
     fetched_high_water_pk: int | None
-    raw_message_count: int
 
 
-def open_whatsapp_db(config: dict[str, Any]) -> sqlite3.Connection:
+def open_whatsapp_db(config: WhatsAppConfig) -> sqlite3.Connection:
     """Open the local WhatsApp SQLite database in read-only mode."""
-    db_path = Path(config["whatsapp"]["db_path"]).expanduser()
+    db_path = config.db_path
     if not db_path.exists():
-        raise ConfigError(f"WhatsApp DB not found: {db_path}")
+        raise FileNotFoundError(f"WhatsApp DB not found: {db_path}")
 
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
@@ -52,14 +37,12 @@ def open_whatsapp_db(config: dict[str, Any]) -> sqlite3.Connection:
 
 def fetch_candidate_messages(
     conn: sqlite3.Connection,
-    config: dict[str, Any],
+    config: WhatsAppConfig,
     state: dict[str, Any],
     limit_override: int | None,
 ) -> FetchResult:
     """Fetch new text-bearing group messages and return them with the raw high-water mark."""
-    whatsapp_config = config.get("whatsapp", {})
-    include_own_messages = bool(whatsapp_config.get("include_own_messages", False))
-    limit = int(limit_override or whatsapp_config.get("max_messages_per_run", 2000))
+    limit = limit_override or config.max_messages_per_run
     if limit <= 0:
         raise ConfigError("Message limit must be positive.")
 
@@ -71,14 +54,11 @@ def fetch_candidate_messages(
         cursor_sql = "AND m.Z_PK > ?"
         params.append(last_pk)
     else:
-        backfill_days = int(whatsapp_config.get("initial_backfill_days", 14))
-        if backfill_days <= 0:
-            raise ConfigError("initial_backfill_days must be positive.")
-        min_unix_time = int((datetime.now(UTC) - timedelta(days=backfill_days)).timestamp())
+        min_unix_time = int((datetime.now(UTC) - timedelta(days=config.initial_backfill_days)).timestamp())
         cursor_sql = f"AND (m.ZMESSAGEDATE + {APPLE_EPOCH_OFFSET_SECONDS}) >= ?"
         params.append(min_unix_time)
 
-    own_message_sql = "" if include_own_messages else "AND m.ZISFROMME = 0"
+    own_message_sql = "" if config.include_own_messages else "AND m.ZISFROMME = 0"
     params.append(limit)
 
     rows = conn.execute(
@@ -128,12 +108,11 @@ def fetch_candidate_messages(
         params,
     ).fetchall()
 
-    raw_messages = [message_from_row(row) for row in rows]
-    fetched_high_water_pk = max((message.message_pk for message in raw_messages), default=None)
+    messages = [message_from_row(row) for row in rows]
+    fetched_high_water_pk = max((message.message_pk for message in messages), default=None)
     return FetchResult(
-        messages=filter_groups(raw_messages, whatsapp_config.get("groups", {})),
+        messages=messages,
         fetched_high_water_pk=fetched_high_water_pk,
-        raw_message_count=len(raw_messages),
     )
 
 
@@ -154,23 +133,18 @@ def fetch_message_local_time(conn: sqlite3.Connection, message_pk: Any) -> str |
     return str(row["local_time"])
 
 
-def count_configured_groups(conn: sqlite3.Connection, config: dict[str, Any]) -> int:
-    """Count WhatsApp groups that match the current include/exclude configuration."""
-    rows = conn.execute(
+def count_groups(conn: sqlite3.Connection) -> int:
+    """Count WhatsApp group chats visible in the local database."""
+    row = conn.execute(
         """
-        SELECT
-            COALESCE(NULLIF(s.ZPARTNERNAME, ''), s.ZCONTACTJID) AS group_name,
-            s.ZCONTACTJID AS group_jid
+        SELECT COUNT(*) AS group_count
         FROM ZWACHATSESSION s
         WHERE
             (s.ZGROUPINFO IS NOT NULL OR s.ZSESSIONTYPE IN (1, 4) OR s.ZCONTACTJID LIKE '%@g.us')
             AND s.ZCONTACTJID NOT LIKE '%@status'
         """
-    ).fetchall()
-    group_config = config.get("whatsapp", {}).get("groups", {})
-    return sum(
-        1 for row in rows if group_is_included(str(row["group_name"] or ""), str(row["group_jid"] or ""), group_config)
-    )
+    ).fetchone()
+    return int(row["group_count"]) if row and row["group_count"] is not None else 0
 
 
 def fetch_max_group_message_pk(conn: sqlite3.Connection) -> int | None:
@@ -241,88 +215,3 @@ def resolve_sender_jid(row: sqlite3.Row) -> str | None:
         if jid and not (jid.endswith("@g.us") or jid.endswith("@status")):
             return jid
     return None
-
-
-def clean_sender_name(value: Any) -> str:
-    """Normalize a sender name and reject raw identifiers."""
-    name = " ".join(str(value or "").split())
-    if not name or is_unhelpful_sender_name(name):
-        return ""
-    return name
-
-
-def clean_sender_jid(value: Any) -> str:
-    """Normalize a sender JID-ish value."""
-    jid = str(value or "").strip()
-    return jid if jid else ""
-
-
-def is_unhelpful_sender_name(name: str) -> bool:
-    """Return whether a candidate sender name is a raw WhatsApp identifier."""
-    lowered = name.casefold()
-    if lowered in {"unknown", "unknown sender"}:
-        return True
-    if is_phone_display_name(name):
-        return False
-    if any(suffix in lowered for suffix in JID_SUFFIXES):
-        return True
-    return is_base64ish_sender_name(name)
-
-
-def is_base64ish_sender_name(name: str) -> bool:
-    """Return whether a name looks like the opaque tokens WhatsApp stores in ZPUSHNAME."""
-    if " " in name or not BASE64ISH_SENDER_RE.fullmatch(name):
-        return False
-    if name.endswith("="):
-        return True
-    if any(character in name for character in "+/"):
-        return True
-    return len(name) >= 16 and any(character.isdigit() for character in name)
-
-
-def is_phone_display_name(name: str) -> bool:
-    """Return whether a display name is just a formatted phone number."""
-    digits = "".join(character for character in name if character.isdigit())
-    if len(digits) < 7:
-        return False
-    allowed_characters = set(" +().-")
-    return all(character.isdigit() or character in allowed_characters for character in name)
-
-
-def sender_name_from_jid(jid: str | None) -> str:
-    """Use a phone JID as a last-resort readable sender label."""
-    if not jid or not jid.endswith("@s.whatsapp.net"):
-        return ""
-    digits = jid.split("@", 1)[0]
-    if not digits.isdigit():
-        return ""
-    return format_phone_digits(digits)
-
-
-def format_phone_digits(digits: str) -> str:
-    """Format phone-number digits from a WhatsApp JID."""
-    if len(digits) == 11 and digits.startswith("1"):
-        return f"+1 {digits[1:4]} {digits[4:7]} {digits[7:]}"
-    return f"+{digits}"
-
-
-def filter_groups(messages: list[Message], group_config: dict[str, Any]) -> list[Message]:
-    """Apply configured group include and exclude filters to fetched messages."""
-    return [message for message in messages if group_is_included(message.group_name, message.group_jid, group_config)]
-
-
-def group_is_included(group_name: str, group_jid: str, group_config: dict[str, Any]) -> bool:
-    """Return whether a group name/JID passes configured include and exclude filters."""
-    include = normalize_filter_values(group_config.get("include", []))
-    exclude = normalize_filter_values(group_config.get("exclude", []))
-    haystack = {group_name.casefold(), group_jid.casefold()}
-    if include and not any(value in haystack for value in include):
-        return False
-    return not (exclude and any(value in haystack for value in exclude))
-
-
-def normalize_filter_values(values: Any) -> set[str]:
-    """Normalize configured group filter values for case-insensitive exact matching."""
-    if not isinstance(values, list):
-        return set()
-    return {str(value).casefold() for value in values if str(value).strip()}

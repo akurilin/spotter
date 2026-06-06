@@ -6,9 +6,8 @@ import sqlite3
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
-from spotter.errors import ConfigError
+from spotter.config import WhatsAppConfig
 
 
 @dataclass(frozen=True)
@@ -22,7 +21,7 @@ class WhatsAppDatabaseAccess:
     detail: str
 
 
-def check_whatsapp_database_access(config: dict[str, Any]) -> WhatsAppDatabaseAccess:
+def check_whatsapp_database_access(config: WhatsAppConfig) -> WhatsAppDatabaseAccess:
     """Check whether the current Python process can read the WhatsApp database."""
     python_path = Path(sys.executable)
     if not python_path.is_absolute():
@@ -50,16 +49,9 @@ def check_whatsapp_database_access(config: dict[str, Any]) -> WhatsAppDatabaseAc
     )
 
 
-def configured_whatsapp_database_path(config: dict[str, Any]) -> Path:
+def configured_whatsapp_database_path(config: WhatsAppConfig) -> Path:
     """Return the configured WhatsApp database path."""
-    whatsapp_config = config.get("whatsapp", {})
-    if not isinstance(whatsapp_config, dict):
-        raise ConfigError("whatsapp config must be an object.")
-
-    value = whatsapp_config.get("db_path")
-    if not isinstance(value, str) or not value.strip():
-        raise ConfigError("whatsapp.db_path must be a non-empty string.")
-    return Path(value).expanduser()
+    return config.db_path
 
 
 def format_database_access_failure(db_path: Path, python_path: Path, exc: sqlite3.OperationalError) -> str:

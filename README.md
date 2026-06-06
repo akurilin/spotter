@@ -4,6 +4,7 @@
 [![macOS](https://img.shields.io/badge/macOS-14%2B-000000?logo=apple&logoColor=white)](https://www.apple.com/macos/)
 [![Anthropic API](https://img.shields.io/badge/Anthropic-Claude-D97757?logo=anthropic&logoColor=white)](https://docs.anthropic.com)
 [![lint: ruff](https://img.shields.io/badge/lint-ruff-D7FF64.svg)](https://docs.astral.sh/ruff/)
+[![Tests](https://github.com/akurilin/spotter/actions/workflows/test.yml/badge.svg)](https://github.com/akurilin/spotter/actions/workflows/test.yml)
 
 `spotter` is a local, single-user WhatsApp group scanner that pings you only when a message matches a topic you actually care about. It reads the macOS WhatsApp desktop SQLite database in read-only mode, sends batches of new group messages to Claude for natural-language classification, writes matches to `alerts.jsonl`, and delivers notifications via macOS Notification Center and/or [Pushover](https://pushover.net/) for push to your phone.
 
@@ -29,14 +30,18 @@ spotter is a single-process Python CLI split into a thin entry point plus a smal
 
 | Component                       | Role                                                                                  |
 | ------------------------------- | ------------------------------------------------------------------------------------- |
-| `spotter.py`                    | CLI entry point, scan loop, Claude batching, alert composition, dedupe                |
+| `spotter.py`                    | CLI entry point, scan orchestration, alert composition, dedupe                        |
+| `spotter/classifier.py`         | Claude batching, structured response parsing, validation, and usage collection        |
+| `spotter/config.py`             | Pydantic-based typed configuration loading, defaults, and validation                  |
+| `spotter/identity.py`           | Shared sender identity normalization and display fallbacks                            |
+| `spotter/models.py`             | Shared domain values passed between scanner subsystems                                |
 | `spotter/whatsapp_db.py`        | Read-only access to the WhatsApp `ChatStorage.sqlite`, group filtering, cursor reads  |
 | `spotter/notifications.py`      | macOS Notification Center (`osascript`) and Pushover HTTP delivery                    |
 | `spotter/launchagent.py`        | Generate, install, query, and remove the LaunchAgent plist                            |
 | `spotter/tui.py`                | Textual terminal UI for run history, alert history, and LaunchAgent controls          |
 | `spotter/usage.py`              | Per-run Claude token-usage records appended to `usage.jsonl`                          |
 | `spotter/errors.py`             | Structured error records for `errors.jsonl`                                           |
-| `spotter/paths.py`              | Path expansion and project-root resolution                                            |
+| `spotter/paths.py`              | Runtime log path resolution                                                           |
 
 Runtime targets:
 
@@ -49,7 +54,7 @@ Runtime targets:
 
 1. The CLI loads `config.json` and `.env`, configures logging, and opens the WhatsApp `ChatStorage.sqlite` read-only.
 2. It reads the universal cursor from `state.json`. On the first run with no cursor, it backfills the last `initial_backfill_days` of group messages (default 14).
-3. New group messages since the cursor are pulled, filtered against the configured include/exclude group lists, and stripped of system messages, status updates, and (by default) the user's own messages.
+3. New group messages since the cursor are pulled and stripped of system messages, status updates, and (by default) the user's own messages.
 4. Messages are batched (default 100 per batch) and each batch is sent to Claude with the topic descriptions as a system prompt and a JSON-schema-constrained matches response.
 5. Each response is validated: every match must reference a `message_pk` present in the batch and a `topic_id` defined in `config.json`. Malformed batches abort the run without advancing the cursor.
 6. Validated matches are composed into alerts, deduped against the existing `alerts.jsonl`, and written to disk.
@@ -76,7 +81,7 @@ The Anthropic API key is the only secret leaving the machine. WhatsApp database 
 
 spotter has two configuration files, both gitignored, both bootstrapped from `.example` templates:
 
-- **`config.json`** holds everything about *behavior*: topics, WhatsApp DB path, batch sizes, group include/exclude, LLM model + token caps, notification toggles, LaunchAgent label and interval, log directory, and output file paths. Copy it from `config.example.json` and edit the topics.
+- **`config.json`** holds everything about *behavior*: topics, WhatsApp DB path, batch sizes, LLM model + token caps, notification toggles, LaunchAgent label and interval, log directory, and output file paths. Copy it from `config.example.json` and edit the topics.
 - **`.env`** holds *secrets only*: `ANTHROPIC_API_KEY` (required), and `PUSHOVER_APP_TOKEN` + `PUSHOVER_USER_KEY` (only if `notifications.pushover` is `true` in `config.json`). Copy it from `.env.example`.
 
 This split lets you check in changes to `config.example.json` (defaults, new options) without touching anyone's local secrets, and lets you rotate keys without rewriting your topic config.

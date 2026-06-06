@@ -1,4 +1,4 @@
-"""Terminal UI for spotter history and LaunchAgent controls."""
+"""Terminal UI for spotter history, configuration, and LaunchAgent controls."""
 
 from __future__ import annotations
 
@@ -8,10 +8,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, ClassVar
 
+from rich.markup import escape
 from textual import events
 from textual.app import App, ComposeResult
 from textual.widgets import DataTable, Footer, Header, Sparkline, Static, TabbedContent, TabPane
 
+from spotter.config import AppConfig, load_config
 from spotter.errors import ConfigError
 from spotter.launchagent import (
     LaunchAgentStatus,
@@ -23,13 +25,14 @@ from spotter.launchagent import (
 from spotter.preflight import WhatsAppDatabaseAccess, check_whatsapp_database_access
 
 type JsonObject = dict[str, Any]
+type FileSignature = tuple[int, int] | None
+type TableViewState = tuple[int, float, float]
 
 RUN_COLUMNS: tuple[str, ...] = (
     "Started",
     "Status",
     "Dry",
-    "Raw",
-    "Configured",
+    "Messages",
     "Batches",
     "Alerts",
     "Input",
@@ -50,16 +53,32 @@ AGENT_COLUMNS: tuple[str, ...] = (
     "Status",
     "Details",
 )
+CONFIG_COLUMNS: tuple[str, ...] = (
+    "Setting",
+    "Value",
+)
+TOPIC_COLUMNS: tuple[str, ...] = (
+    "Priority",
+    "ID",
+    "Name",
+    "Threshold",
+    "Description",
+)
+TOPIC_COLUMN_WIDTHS: tuple[int, ...] = (8, 24, 28, 10, 80)
 RUN_SPARKLINE_LIMIT = 50
+HISTORY_REFRESH_INTERVAL_SECONDS = 3
+REDACTED_CONFIG_VALUE = "[redacted]"
 
 
 class SpotterTui(App):
     """Textual application for spotter history and LaunchAgent operations."""
 
     BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
-        ("1", "show_runs", "1 Runs"),
-        ("2", "show_alerts", "2 Alerts"),
+        ("1", "show_alerts", "1 Alerts"),
+        ("2", "show_runs", "2 Runs"),
         ("3", "show_agent", "3 Agent"),
+        ("4", "show_config", "4 Config"),
+        ("5", "show_topics", "5 Topics"),
         ("f5", "refresh_data", "Refresh"),
         ("q", "quit", "Quit"),
     ]
@@ -82,6 +101,12 @@ class SpotterTui(App):
         margin: 0 1 1 1;
     }
 
+    #runs-shortcuts, #alerts-shortcuts, #config-summary, #topics-summary {
+        height: 1;
+        padding: 0 1;
+        color: $text-muted;
+    }
+
     #agent-status {
         height: 1;
         padding: 0 1;
@@ -95,31 +120,43 @@ class SpotterTui(App):
     }
     """
 
-    def __init__(self, config: dict[str, Any], config_path: Path) -> None:
+    def __init__(self, config: AppConfig, config_path: Path) -> None:
         """Initialize the TUI with configured read-only log paths."""
         super().__init__()
         self.config = config
         self.config_path = config_path
         self.title = "spotter"
-        self.usage_path = optional_file_path(config, "usage")
-        self.alerts_path = required_file_path(config, "alerts")
+        self.usage_path = config.files.usage
+        self.alerts_path = config.files.alerts
+        self.runs_newest_first = True
+        self.alerts_newest_first = True
+        self.runs_file_signature: FileSignature = None
+        self.alerts_file_signature: FileSignature = None
 
     def compose(self) -> ComposeResult:
         """Build the app layout with numbered top-level tabs."""
         yield Header()
-        with TabbedContent(initial="runs", id="view-tabs"):
-            with TabPane("1 Runs", id="runs"):
+        with TabbedContent(initial="alerts", id="view-tabs"):
+            with TabPane("1 Alerts", id="alerts"):
+                yield Static(id="alerts-shortcuts")
+                yield DataTable(id="alerts-table", cursor_type="row")
+            with TabPane("2 Runs", id="runs"):
+                yield Static(id="runs-shortcuts")
                 yield Static(id="runs-summary")
                 yield Sparkline(id="runs-sparkline")
                 yield DataTable(id="runs-table", cursor_type="row")
-            with TabPane("2 Alerts", id="alerts"):
-                yield DataTable(id="alerts-table", cursor_type="row")
             with TabPane("3 Agent", id="agent"):
                 yield Static(id="agent-status")
                 yield Static(
                     "Keys: e enable automatic runs | d disable automatic runs | F5 refresh", id="agent-shortcuts"
                 )
                 yield DataTable(id="agent-table", cursor_type="row")
+            with TabPane("4 Config", id="config"):
+                yield Static(id="config-summary")
+                yield DataTable(id="config-table", cursor_type="row")
+            with TabPane("5 Topics", id="topics"):
+                yield Static(id="topics-summary")
+                yield DataTable(id="topics-table", cursor_type="row")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -127,7 +164,10 @@ class SpotterTui(App):
         self.refresh_runs_table()
         self.refresh_alerts_table()
         self.refresh_agent_panel()
-        self.focus_runs_table()
+        self.refresh_config_table()
+        self.refresh_topics_table()
+        self.focus_alerts_table()
+        self.set_interval(HISTORY_REFRESH_INTERVAL_SECONDS, self.refresh_changed_history)
 
     def action_show_runs(self) -> None:
         """Switch to the run history tab."""
@@ -144,8 +184,18 @@ class SpotterTui(App):
         self.query_one("#view-tabs", TabbedContent).active = "agent"
         self.call_after_refresh(self.focus_agent_table)
 
+    def action_show_config(self) -> None:
+        """Switch to the non-topic configuration tab."""
+        self.query_one("#view-tabs", TabbedContent).active = "config"
+        self.call_after_refresh(self.focus_config_table)
+
+    def action_show_topics(self) -> None:
+        """Switch to the configured topics tab."""
+        self.query_one("#view-tabs", TabbedContent).active = "topics"
+        self.call_after_refresh(self.focus_topics_table)
+
     def action_refresh_data(self) -> None:
-        """Refresh the currently active table from disk."""
+        """Refresh the currently active view."""
         active_tab = self.query_one("#view-tabs", TabbedContent).active
         if active_tab == "alerts":
             self.refresh_alerts_table()
@@ -155,12 +205,32 @@ class SpotterTui(App):
             self.refresh_agent_panel()
             self.focus_agent_table()
             return
+        if active_tab in {"config", "topics"}:
+            self.reload_config_views()
+            if active_tab == "config":
+                self.focus_config_table()
+            else:
+                self.focus_topics_table()
+            return
         self.refresh_runs_table()
         self.focus_runs_table()
 
     def on_key(self, event: events.Key) -> None:
         """Handle key commands that are local to the active tab."""
-        if self.query_one("#view-tabs", TabbedContent).active != "agent":
+        active_tab = self.query_one("#view-tabs", TabbedContent).active
+        if active_tab == "runs" and event.key == "s":
+            event.stop()
+            self.runs_newest_first = not self.runs_newest_first
+            self.refresh_runs_table()
+            self.focus_runs_table()
+            return
+        if active_tab == "alerts" and event.key == "s":
+            event.stop()
+            self.alerts_newest_first = not self.alerts_newest_first
+            self.refresh_alerts_table()
+            self.focus_alerts_table()
+            return
+        if active_tab != "agent":
             return
         if event.key == "e":
             event.stop()
@@ -182,10 +252,37 @@ class SpotterTui(App):
         """Focus the agent status table and place its cursor on the first row."""
         focus_first_table_row(self.query_one("#agent-table", DataTable))
 
+    def focus_config_table(self) -> None:
+        """Focus the configuration table and place its cursor on the first row."""
+        focus_first_table_row(self.query_one("#config-table", DataTable))
+
+    def focus_topics_table(self) -> None:
+        """Focus the topics table and place its cursor on the first row."""
+        focus_first_table_row(self.query_one("#topics-table", DataTable))
+
+    def refresh_changed_history(self) -> None:
+        """Reload history widgets only when their source files have changed."""
+        runs_changed = file_signature(self.usage_path) != self.runs_file_signature
+        alerts_changed = file_signature(self.alerts_path) != self.alerts_file_signature
+        if not runs_changed and not alerts_changed:
+            return
+
+        runs_view = capture_table_view(self.query_one("#runs-table", DataTable)) if runs_changed else None
+        alerts_view = capture_table_view(self.query_one("#alerts-table", DataTable)) if alerts_changed else None
+        with self.batch_update():
+            if runs_changed:
+                self.refresh_runs_table()
+                restore_table_view(self.query_one("#runs-table", DataTable), runs_view)
+            if alerts_changed:
+                self.refresh_alerts_table()
+                restore_table_view(self.query_one("#alerts-table", DataTable), alerts_view)
+
     def refresh_runs_table(self) -> None:
         """Reload usage records from disk into the runs table."""
+        self.runs_file_signature = file_signature(self.usage_path)
         table = self.query_one("#runs-table", DataTable)
         reset_table(table, RUN_COLUMNS)
+        self.query_one("#runs-shortcuts", Static).update(format_sort_shortcuts(self.runs_newest_first))
 
         rows = read_jsonl_objects(self.usage_path)
         self.refresh_runs_sparkline(rows)
@@ -193,13 +290,12 @@ class SpotterTui(App):
             add_empty_row(table, len(RUN_COLUMNS), "No run records found.")
             return
 
-        for row in reversed(rows):
+        for row in sort_rows_by_timestamp(rows, "started_at", self.runs_newest_first):
             table.add_row(
                 format_timestamp(row.get("started_at")),
                 text_value(row.get("status")),
                 format_bool(row.get("dry_run")),
-                format_int(row.get("raw_messages")),
-                format_int(row.get("configured_messages")),
+                format_int(row.get("messages")),
                 format_int(row.get("batches")),
                 format_int(row.get("alerts")),
                 format_int(row.get("input_tokens")),
@@ -217,15 +313,17 @@ class SpotterTui(App):
 
     def refresh_alerts_table(self) -> None:
         """Reload alert records from disk into the alerts table."""
+        self.alerts_file_signature = file_signature(self.alerts_path)
         table = self.query_one("#alerts-table", DataTable)
         reset_table(table, ALERT_COLUMNS)
+        self.query_one("#alerts-shortcuts", Static).update(format_sort_shortcuts(self.alerts_newest_first))
 
         rows = read_jsonl_objects(self.alerts_path)
         if not rows:
             add_empty_row(table, len(ALERT_COLUMNS), "No alert records found.")
             return
 
-        for row in reversed(rows):
+        for row in sort_rows_by_timestamp(rows, "created_at", self.alerts_newest_first):
             table.add_row(
                 format_timestamp(row.get("created_at")),
                 shorten(row.get("topic_name"), 28),
@@ -242,8 +340,8 @@ class SpotterTui(App):
         reset_table(table, AGENT_COLUMNS)
 
         try:
-            status = inspect_launch_agent(self.config, self.config_path)
-            database_access = check_whatsapp_database_access(self.config)
+            status = inspect_launch_agent(self.config.launch_agent, self.config.logging, self.config_path)
+            database_access = check_whatsapp_database_access(self.config.whatsapp)
         except (ConfigError, OSError, RuntimeError) as exc:
             self.query_one("#agent-status", Static).update(message or f"Automatic runs: UNKNOWN | {exc}")
             table.add_row("Status", "error", str(exc))
@@ -254,10 +352,53 @@ class SpotterTui(App):
         for check, status_text, details in agent_status_rows(status, database_access):
             table.add_row(check, status_text, details)
 
+    def reload_config_views(self) -> None:
+        """Reload config.json and update both configuration views atomically."""
+        try:
+            config = load_config(self.config_path)
+        except (ConfigError, OSError) as exc:
+            message = f"Reload failed: {exc}"
+            self.query_one("#config-summary", Static).update(escape(message))
+            self.query_one("#topics-summary", Static).update(escape(message))
+            return
+
+        self.config = config
+        self.usage_path = config.files.usage
+        self.alerts_path = config.files.alerts
+        with self.batch_update():
+            self.refresh_config_table("Reloaded")
+            self.refresh_topics_table("Reloaded")
+
+    def refresh_config_table(self, message: str | None = None) -> None:
+        """Render loaded non-topic configuration values."""
+        table = self.query_one("#config-table", DataTable)
+        reset_table(table, CONFIG_COLUMNS)
+        rows = config_display_rows(self.config.model_dump(mode="json", exclude_none=True))
+        summary = f"Loaded config: {self.config_path} | {len(rows)} settings"
+        self.query_one("#config-summary", Static).update(f"{summary} | {message}" if message else summary)
+        if not rows:
+            add_empty_row(table, len(CONFIG_COLUMNS), "No non-topic configuration found.")
+            return
+        for setting, value in rows:
+            table.add_row(setting, value)
+
+    def refresh_topics_table(self, message: str | None = None) -> None:
+        """Render configured topics in classifier priority order."""
+        table = self.query_one("#topics-table", DataTable)
+        reset_table_with_widths(table, TOPIC_COLUMNS, TOPIC_COLUMN_WIDTHS)
+        rows = topic_display_rows(self.config)
+        summary = f"Configured topics: {len(rows)} | First match has priority"
+        self.query_one("#topics-summary", Static).update(f"{summary} | {message}" if message else summary)
+        if not rows:
+            add_empty_row(table, len(TOPIC_COLUMNS), "No topics configured.")
+            return
+        for row in rows:
+            table.add_row(*row, height=None)
+
     def enable_launch_agent(self) -> None:
         """Install or update the LaunchAgent from the current config."""
         try:
-            install_launch_agent(self.config, self.config_path, emit=False)
+            install_launch_agent(self.config.launch_agent, self.config.logging, self.config_path, emit=False)
         except (ConfigError, OSError, RuntimeError, subprocess.CalledProcessError) as exc:
             self.refresh_agent_panel(f"Enable failed: {exc}")
             self.focus_agent_table()
@@ -268,7 +409,7 @@ class SpotterTui(App):
     def disable_launch_agent(self) -> None:
         """Unload and remove the LaunchAgent."""
         try:
-            uninstall_launch_agent(self.config, emit=False)
+            uninstall_launch_agent(self.config.launch_agent, emit=False)
         except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
             self.refresh_agent_panel(f"Disable failed: {exc}")
             self.focus_agent_table()
@@ -277,7 +418,7 @@ class SpotterTui(App):
         self.focus_agent_table()
 
 
-def run_tui(config: dict[str, Any], config_path: Path) -> int:
+def run_tui(config: AppConfig, config_path: Path) -> int:
     """Start the terminal UI and block until the user exits it."""
     SpotterTui(config, config_path).run()
     return 0
@@ -289,6 +430,13 @@ def reset_table(table: DataTable, columns: tuple[str, ...]) -> None:
     table.add_columns(*columns)
 
 
+def reset_table_with_widths(table: DataTable, columns: tuple[str, ...], widths: tuple[int, ...]) -> None:
+    """Clear a data table and replace its column headers with fixed widths."""
+    table.clear(columns=True)
+    for column, width in zip(columns, widths, strict=True):
+        table.add_column(column, width=width)
+
+
 def add_empty_row(table: DataTable, column_count: int, message: str) -> None:
     """Add a single placeholder row that fits the table's current column count."""
     table.add_row(message, *[""] * max(column_count - 1, 0))
@@ -298,6 +446,20 @@ def focus_first_table_row(table: DataTable) -> None:
     """Focus a data table and position keyboard navigation at its first row."""
     table.focus()
     table.move_cursor(row=0, column=0, animate=False, scroll=True)
+
+
+def capture_table_view(table: DataTable) -> TableViewState:
+    """Capture cursor and scroll positions before an automatic table update."""
+    return table.cursor_row, table.scroll_x, table.scroll_y
+
+
+def restore_table_view(table: DataTable, view: TableViewState | None) -> None:
+    """Restore cursor and scroll positions without changing keyboard focus."""
+    if view is None:
+        return
+    cursor_row, scroll_x, scroll_y = view
+    table.move_cursor(row=min(cursor_row, max(table.row_count - 1, 0)), animate=False, scroll=False)
+    table.scroll_to(x=scroll_x, y=scroll_y, animate=False, force=True)
 
 
 def read_jsonl_objects(path: Path | None) -> list[JsonObject]:
@@ -319,24 +481,125 @@ def read_jsonl_objects(path: Path | None) -> list[JsonObject]:
     return rows
 
 
-def optional_file_path(config: dict[str, Any], key: str) -> Path | None:
-    """Resolve an optional file path from the config's files section."""
-    files = config.get("files", {})
-    if not isinstance(files, dict):
-        raise ConfigError("files config must be an object.")
-
-    value = files.get(key)
-    if not isinstance(value, str) or not value.strip():
-        return None
-    return Path(value).expanduser()
-
-
-def required_file_path(config: dict[str, Any], key: str) -> Path:
-    """Resolve a required file path from the config's files section."""
-    path = optional_file_path(config, key)
+def file_signature(path: Path | None) -> FileSignature:
+    """Return metadata sufficient to detect ordinary file appends and replacements."""
     if path is None:
-        raise ConfigError(f"Missing files.{key} in config.")
-    return path
+        return None
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return stat.st_mtime_ns, stat.st_size
+
+
+def config_display_rows(config: dict[str, Any]) -> list[tuple[str, str]]:
+    """Flatten loaded configuration for display, excluding topics and secrets."""
+    rows: list[tuple[str, str]] = []
+    for key, value in config.items():
+        if key == "topics":
+            continue
+        rows.extend(flatten_config_value(key, value))
+    return rows
+
+
+def flatten_config_value(path: str, value: Any) -> list[tuple[str, str]]:
+    """Flatten one configuration value into dotted display rows."""
+    if is_sensitive_config_path(path):
+        return [(path, REDACTED_CONFIG_VALUE)]
+    if isinstance(value, dict):
+        if not value:
+            return [(path, "{}")]
+        rows: list[tuple[str, str]] = []
+        for key, nested_value in value.items():
+            rows.extend(flatten_config_value(f"{path}.{key}", nested_value))
+        return rows
+    if isinstance(value, list):
+        if not value:
+            return [(path, "[]")]
+        rows = []
+        for index, nested_value in enumerate(value):
+            rows.extend(flatten_config_value(f"{path}[{index}]", nested_value))
+        return rows
+    return [(path, format_config_value(value))]
+
+
+def is_sensitive_config_path(path: str) -> bool:
+    """Return whether a configuration path likely contains a secret."""
+    key = path.rsplit(".", maxsplit=1)[-1].split("[", maxsplit=1)[0].lower().replace("-", "_")
+    sensitive_names = {
+        "api_key",
+        "apikey",
+        "app_token",
+        "credentials",
+        "key",
+        "password",
+        "secret",
+        "secrets",
+        "token",
+        "user_key",
+    }
+    return key in sensitive_names or key.endswith(("_api_key", "_password", "_secret", "_token"))
+
+
+def format_config_value(value: Any) -> str:
+    """Format a scalar configuration value for compact display."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return "null"
+    return single_line_text(value)
+
+
+def topic_display_rows(config: AppConfig) -> list[tuple[str, str, str, str, str]]:
+    """Return configured topics in classifier priority order."""
+    rows = []
+    for priority, topic in enumerate(config.topics, start=1):
+        rows.append(
+            (
+                str(priority),
+                topic.id,
+                topic.name,
+                format_confidence(topic.threshold),
+                single_line_text(topic.description),
+            )
+        )
+    return rows
+
+
+def sort_rows_by_timestamp(rows: list[JsonObject], field: str, newest_first: bool) -> list[JsonObject]:
+    """Sort dated rows in the requested direction, leaving undated rows last."""
+    dated_rows: list[tuple[datetime, JsonObject]] = []
+    undated_rows: list[JsonObject] = []
+    for row in rows:
+        timestamp = parse_timestamp(row.get(field))
+        if timestamp is None:
+            undated_rows.append(row)
+        else:
+            dated_rows.append((timestamp, row))
+
+    dated_rows.sort(key=lambda item: item[0], reverse=newest_first)
+    return [row for _, row in dated_rows] + undated_rows
+
+
+def parse_timestamp(value: Any) -> datetime | None:
+    """Parse an ISO-8601 timestamp into a consistently comparable datetime."""
+    text = text_value(value)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed.astimezone()
+
+
+def format_sort_shortcuts(newest_first: bool) -> str:
+    """Return the page-local date-order status and shortcuts."""
+    order = "newest first" if newest_first else "oldest first"
+    return (
+        f"Date order: {order} | Auto-refresh: {HISTORY_REFRESH_INTERVAL_SECONDS}s | "
+        "Keys: s reverse date order | F5 refresh"
+    )
 
 
 def text_value(value: Any) -> str:
@@ -346,9 +609,14 @@ def text_value(value: Any) -> str:
     return str(value)
 
 
+def single_line_text(value: Any) -> str:
+    """Return display-safe text without line breaks or repeated whitespace."""
+    return " ".join(text_value(value).split())
+
+
 def shorten(value: Any, max_chars: int) -> str:
     """Return a single-line string capped to the requested display length."""
-    text = " ".join(text_value(value).split())
+    text = single_line_text(value)
     if len(text) <= max_chars:
         return text
     return f"{text[: max(max_chars - 3, 0)].rstrip()}..."

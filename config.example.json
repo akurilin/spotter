@@ -4,14 +4,9 @@
     "initial_backfill_days": 14,
     "include_own_messages": false,
     "max_messages_per_run": 2000,
-    "batch_size": 100,
-    "groups": {
-      "include": [],
-      "exclude": []
-    }
+    "batch_size": 100
   },
   "llm": {
-    "provider": "anthropic",
     "model": "claude-sonnet-4-6",
     "max_tokens": 4000,
     "retry_max_tokens": 8000,
