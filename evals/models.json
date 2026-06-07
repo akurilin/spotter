@@ -1,4 +1,6 @@
 [
+  {"slug": "anthropic/claude-sonnet-4.6", "skip": true},
+  {"slug": "anthropic/claude-opus-4.8", "skip": true},
   {"slug": "deepseek/deepseek-v4-flash"},
   {"slug": "deepseek/deepseek-v4-pro", "skip": true},
   {"slug": "moonshotai/kimi-k2.6", "skip": true},
