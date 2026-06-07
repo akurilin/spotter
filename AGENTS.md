@@ -41,6 +41,8 @@ Design constraints worth knowing before changing anything:
 - `spotter/whatsapp_db.py` - Read-only WhatsApp SQLite queries and message conversion.
 - `evals/README.md` - Manual live classifier eval workflow and case-authoring guidance.
 - `evals/cases.jsonl` - Synthetic and scrubbed model-backed classifier regression cases.
+- `evals/compare_models.py` - Multi-model classifier eval matrix runner with strict-then-freeform structured-output fallback.
+- `evals/models.json` - Registry of OpenRouter slugs and per-model toggles consumed by `compare_models.py`.
 - `evals/run_classifier_evals.py` - Manual live classifier eval runner and result reporting.
 - `tests/support.py` - Shared unittest helpers and application logging suppression.
 - `tests/test_alerts.py` - Alert deduplication and first-configured-topic regression test.

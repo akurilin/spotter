@@ -32,6 +32,18 @@ The runner loads `.env`, uses the model and topic definitions from `config.json`
 
 Manual evals require `llm.temperature` to be `0` for maximum reproducibility. Some models reject the `temperature` parameter; use `--omit-temperature` or set `llm.temperature` to JSON `null` for those models. To compare models, use an OpenRouter model ID with `--model` or pass a separate config with `--config`. Secrets are loaded from the repo `.env` by default; pass `--env` if you need a different file.
 
+## Compare Multiple Models
+
+`evals/compare_models.py` runs the same eval suite across the slugs listed in `evals/models.json` and prints a comparison table.
+
+```bash
+./.venv/bin/python evals/compare_models.py --live
+```
+
+For each model the driver runs every case sequentially, then prints a per-model summary with post-threshold pass count, raw (pre-threshold) match correctness, p50 latency, and aggregate token usage. A JSON artifact with full per-case detail is written to `evals/results/compare_<utc-timestamp>.json` (gitignored). The slugs in `evals/models.json` are expected to exist on OpenRouter at authoring time; the driver does not pre-flight the catalog.
+
+If a provider rejects the strict `response_format` JSON schema, the runner falls back to freeform JSON (system-prompt only) for the rest of that model and marks its mode as `freeform` in the output. Per-model overrides in `evals/models.json` can also force `omit_temperature`, pre-disable structured output, or set `"skip": true` to keep a slug in the registry without running it.
+
 ## Add Cases
 
 Add one JSON object per line to `cases.jsonl`.

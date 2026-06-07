@@ -1,0 +1,8 @@
+[
+  {"slug": "deepseek/deepseek-v4-flash"},
+  {"slug": "deepseek/deepseek-v4-pro", "skip": true},
+  {"slug": "moonshotai/kimi-k2.6", "skip": true},
+  {"slug": "qwen/qwen3.7-max", "skip": true},
+  {"slug": "z-ai/glm-5.1"},
+  {"slug": "xiaomi/mimo-v2.5-pro", "skip": true}
+]

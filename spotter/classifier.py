@@ -314,7 +314,7 @@ def parse_json_response(response: dict[str, Any]) -> dict[str, Any]:
     raw_text = message.get("content")
     if not isinstance(raw_text, str) or not raw_text.strip():
         raise ClassificationError("OpenRouter returned no text content.")
-    raw_text = raw_text.strip()
+    raw_text = strip_code_fence(raw_text.strip())
     if response_finish_reason(response) == "length":
         raise ClassificationError(
             "OpenRouter response hit the output token limit before valid JSON could be parsed. "
@@ -331,6 +331,17 @@ def parse_json_response(response: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise ClassificationError("OpenRouter model output must be a JSON object.")
     return parsed
+
+
+def strip_code_fence(text: str) -> str:
+    """Remove a wrapping markdown code fence around JSON content (some models emit ```json ... ``` blocks)."""
+    if not text.startswith("```"):
+        return text
+    newline_index = text.find("\n")
+    body = text[newline_index + 1 :] if newline_index != -1 else text[3:]
+    if body.endswith("```"):
+        body = body[:-3]
+    return body.strip()
 
 
 def validate_matches(parsed: Any, message_pks: set[int], topic_ids: set[str]) -> list[Match]:

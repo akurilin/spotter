@@ -5,7 +5,7 @@ import json
 import urllib.error
 from unittest.mock import patch
 
-from spotter.classifier import classify_batch, classify_messages, post_openrouter, validate_matches
+from spotter.classifier import classify_batch, classify_messages, post_openrouter, strip_code_fence, validate_matches
 from spotter.config import LlmConfig, Topic
 from spotter.errors import ClassificationError
 from spotter.models import Match, Message
@@ -141,6 +141,28 @@ class ClassifierTests(TestCase):
             self.assertRaisesRegex(ClassificationError, "OpenRouter API error 402: insufficient credits"),
         ):
             post_openrouter({}, api_key="test-key", timeout_seconds=1, max_retries=0)
+
+    def test_classify_batch_accepts_markdown_fenced_json(self):
+        fenced = {
+            "choices": [{"finish_reason": "stop", "message": {"content": '```json\n{"matches": []}\n```'}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 4},
+        }
+
+        with patch("spotter.classifier.post_openrouter", return_value=fenced):
+            matches = classify_batch(
+                "test-key",
+                LlmConfig(),
+                (Topic(id="example_topic", name="Example topic", description="Synthetic topic."),),
+                [example_message()],
+                UsageAccumulator(),
+            )
+
+        self.assertEqual([], matches)
+
+    def test_strip_code_fence_handles_common_wrappings(self):
+        self.assertEqual('{"matches": []}', strip_code_fence('```json\n{"matches": []}\n```'))
+        self.assertEqual('{"matches": []}', strip_code_fence('```\n{"matches": []}\n```'))
+        self.assertEqual('{"matches": []}', strip_code_fence('{"matches": []}'))
 
     def test_validate_matches_returns_typed_matches(self):
         matches = validate_matches(
