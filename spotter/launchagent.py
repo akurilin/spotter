@@ -91,7 +91,6 @@ def build_launch_agent_plist(config: LaunchAgentConfig, logging: LoggingConfig, 
     """Build the launchd property list for periodic scanner execution."""
     root = project_root()
     logs_dir = app_log_dir(logging)
-    stdout_path = logs_dir / "launchd.out.log"
     stderr_path = logs_dir / "launchd.err.log"
 
     return {
@@ -106,7 +105,6 @@ def build_launch_agent_plist(config: LaunchAgentConfig, logging: LoggingConfig, 
         "WorkingDirectory": str(root),
         "RunAtLoad": config.run_at_load,
         "StartInterval": config.start_interval_seconds,
-        "StandardOutPath": str(stdout_path),
         "StandardErrorPath": str(stderr_path),
         "EnvironmentVariables": {
             "PYTHONUNBUFFERED": "1",
