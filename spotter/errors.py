@@ -17,3 +17,7 @@ class NotificationError(RuntimeError):
 
 class LaunchAgentError(RuntimeError):
     pass
+
+
+class MonitoringError(RuntimeError):
+    pass

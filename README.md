@@ -20,6 +20,7 @@ Features spotter is particularly proud of:
 - **Independent notification backends.** macOS Notification Center and Pushover can be toggled separately in `config.json`. Good when you want banners at the laptop and pushes on your phone — or only one of those — without forking config.
 - **Prompt-injection-aware design.** Every WhatsApp message is treated as untrusted input. Validated matches must reference a `message_pk` from the current batch and a `topic_id` from your config, notification payloads are passed as arguments rather than interpolated into scripts, and there is no shell, `eval`, or template rendering in the path. The realistic worst case is spammy alert text, not code execution.
 - **Per-run usage logging.** Every scan appends a structured token-usage record to `usage.jsonl` so you can audit model usage.
+- **Dead Man's Snitch monitoring.** Successful scheduled scans can ping a secret check-in URL so missing or failed runs trigger an external alert.
 - **LaunchAgent-managed.** `install-agent` writes a generated plist pinned to the project's `.venv` Python, with interval and run-at-load behavior driven by `config.json`. `agent-status` and `uninstall-agent` round out the lifecycle.
 - **Dry-run modes.** `--dry-run` and `--dry-run --limit N` let you exercise the full pipeline against real WhatsApp data without writing state, alerts, or notifications. Matches still print to the terminal so you can sanity-check topic descriptions before committing.
 - **Deliberately narrow scope.** Single user, single machine, single LLM gateway, single notification flow. No multi-tenancy, no provider abstraction, no plugin system.
@@ -38,6 +39,7 @@ spotter is a single-process Python CLI split into a thin entry point plus a smal
 | `spotter/models.py`             | Shared domain values passed between scanner subsystems                                |
 | `spotter/whatsapp_db.py`        | Read-only access to the WhatsApp `ChatStorage.sqlite`, group filtering, cursor reads  |
 | `spotter/notifications.py`      | macOS Notification Center (`osascript`) and Pushover HTTP delivery                    |
+| `spotter/monitoring.py`         | Dead Man's Snitch successful-run heartbeat delivery                                  |
 | `spotter/launchagent.py`        | Generate, install, query, and remove the LaunchAgent plist                            |
 | `spotter/tui.py`                | Textual terminal UI for run history, alert history, and LaunchAgent controls          |
 | `spotter/usage.py`              | Per-run model token-usage records appended to `usage.jsonl`                           |
@@ -61,8 +63,9 @@ Runtime targets:
 6. Validated matches are composed into alerts, deduped against the existing `alerts.jsonl`, and written to disk.
 7. Notifications fire through every enabled backend. Failures are logged to `errors.jsonl` as `notification_failed` entries but do not block cursor advance.
 8. The cursor is advanced and a token-usage record is appended to `usage.jsonl` — **only** if every batch in the run classified successfully.
+9. A successful non-dry-run scan sends a GET request to `DEAD_MANS_SNITCH_URL` when configured. Failed scans deliberately do not check in.
 
-The OpenRouter API key is the only secret leaving the machine. WhatsApp database files are never modified.
+WhatsApp database files are never modified. Configured service credentials are sent only to their corresponding services.
 
 ## Requirements
 
@@ -76,6 +79,7 @@ The OpenRouter API key is the only secret leaving the machine. WhatsApp database
 ### Nice-to-haves
 
 - **A [Pushover](https://pushover.net) account, app token, and user key** — only needed if you want alerts pushed to your phone when you're away from the laptop. Free trial works fine for testing; the one-time license is cheap.
+- **A [Dead Man's Snitch](https://deadmanssnitch.com/) check-in URL** — only needed if you want an external alert when scheduled scans stop succeeding.
 - **Ruff** — installed via `requirements-dev.txt` for `ruff format` and `ruff check` before commits.
 
 ## Configuration model
@@ -83,7 +87,7 @@ The OpenRouter API key is the only secret leaving the machine. WhatsApp database
 spotter has two configuration files, both gitignored, both bootstrapped from `.example` templates:
 
 - **`config.json`** holds everything about *behavior*: topics, WhatsApp DB path, batch sizes, LLM model + token caps, notification toggles, LaunchAgent label and interval, log directory, and output file paths. Copy it from `config.example.json` and edit the topics.
-- **`.env`** holds *secrets only*: `OPENROUTER_API_KEY` (required), and `PUSHOVER_APP_TOKEN` + `PUSHOVER_USER_KEY` (only if `notifications.pushover` is `true` in `config.json`). Copy it from `.env.example`.
+- **`.env`** holds *secrets only*: `OPENROUTER_API_KEY` (required), optional Pushover credentials, and the optional `DEAD_MANS_SNITCH_URL` check-in credential. Copy it from `.env.example`.
 
 This split lets you check in changes to `config.example.json` (defaults, new options) without touching anyone's local secrets, and lets you rotate keys without rewriting your topic config.
 
@@ -112,16 +116,17 @@ Now work through the blanks:
 2. **Topics.** Edit the `topics` array in `config.json`. Each entry is `{ id, name, description, threshold }`. The `description` is what the classifier sees — be explicit about both the intent you care about *and* the near-misses you want excluded. Precision in the description directly reduces false positives.
 3. **Grant Full Disk Access to the virtualenv Python.** macOS will otherwise block the read of `ChatStorage.sqlite` with "unable to open database file". Open **System Settings → Privacy & Security → Full Disk Access**, click **+**, press <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>.</kbd> to reveal hidden files, navigate to this repo's `.venv/bin/`, and add `python3` (the symlink resolves to the real interpreter). If you later install the LaunchAgent, the same binary is what launchd runs, so this single grant covers both interactive and scheduled runs.
 4. **Pushover (optional).** If you want phone pushes, create a Pushover account + application, then paste `PUSHOVER_APP_TOKEN` and `PUSHOVER_USER_KEY` into `.env` and leave `notifications.pushover` set to `true` in `config.json`. Otherwise flip it to `false`.
-5. **Smoke test.** Run a dry run against a small slice of messages to validate your topic descriptions:
+5. **Dead Man's Snitch (optional).** Create a snitch with a deadline longer than `launch_agent.start_interval_seconds`, then paste its secret check-in URL into `DEAD_MANS_SNITCH_URL` in `.env`.
+6. **Smoke test.** Run a dry run against a small slice of messages to validate your topic descriptions:
    ```bash
    ./.venv/bin/python spotter.py run --dry-run --limit 100
    ```
    Matches will print to the terminal without writing state, alerts, or notifications.
-6. **First real run.** Drop `--dry-run` to advance the cursor and fire notifications:
+7. **First real run.** Drop `--dry-run` to advance the cursor, fire notifications, and check in with Dead Man's Snitch when configured:
    ```bash
    ./.venv/bin/python spotter.py run
    ```
-7. **Install the LaunchAgent.** Once you trust the topic config, schedule it:
+8. **Install the LaunchAgent.** Once you trust the topic config, schedule it:
    ```bash
    ./.venv/bin/python spotter.py install-agent
    ```
@@ -214,6 +219,12 @@ Optional Pushover knobs (`pushover_device`, `pushover_priority`, `pushover_sound
 
 Notification delivery is best-effort. If macOS or Pushover delivery fails, the scanner logs the failure and writes a structured `notification_failed` entry to `errors.jsonl` without blocking cursor advancement. Notification text includes the resolved sender name and the local time the alert was created.
 
+## Monitoring
+
+Set the optional secret `DEAD_MANS_SNITCH_URL` in `.env` to monitor scanner health. After every successful non-dry-run scan, including scans with no new messages, spotter sends one HTTPS GET request to that URL. Failed scans and dry runs do not check in, allowing Dead Man's Snitch to alert when the LaunchAgent stops running or scans repeatedly fail.
+
+Heartbeat delivery is best-effort and happens after scan state and usage records are written. A failed heartbeat is logged and written to `errors.jsonl` as `dead_mans_snitch_failed` without changing cursor state or the scan exit code. The secret URL is never written to logs or error records.
+
 ## Logging
 
 The default log directory is `~/Library/Logs/spotter`, which matches the usual macOS convention for per-user application logs. The directory and log level are controlled by the `logging` section in `config.json`; the file paths for `state`, `alerts`, `errors`, and `usage` are independently configurable under `files`.
@@ -226,7 +237,7 @@ Every artifact spotter writes — read this table first when debugging:
 | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
 | `~/Library/Logs/spotter/spotter.log`                          | Main scanner log: config load, cursor state, group/message counts, model, batch progress, match counts, notification backend activity.           | Default "what happened on the last run".                                                         |
 | `~/Library/Logs/spotter/alerts.jsonl`                         | Append-only history of every alert spotter has surfaced, one JSON object per line. Used for dedupe across runs.                                  | Auditing past matches; sanity-checking that an expected alert actually fired.                    |
-| `~/Library/Logs/spotter/errors.jsonl`                         | Structured error records (`notification_failed`, classifier failures, schema-validation failures), one JSON object per line.                     | Finding what failed silently — notification delivery failures don't block cursor advance.        |
+| `~/Library/Logs/spotter/errors.jsonl`                         | Structured error records (`notification_failed`, `dead_mans_snitch_failed`, classifier failures), one JSON object per line.                      | Finding what failed silently — best-effort delivery failures don't block cursor advance.         |
 | `~/Library/Logs/spotter/usage.jsonl`                          | One JSON line per successful run with model input/output token usage and model name.                                                             | Auditing API spend; spotting runs that classified more batches than expected.                    |
 | `~/Library/Logs/spotter/launchd.err.log`                     | stderr captured by launchd for scheduled runs (`StandardErrorPath` in the generated plist).                                                      | Scheduled runs that don't even reach `spotter.log` — Python startup errors, import errors, or missing config. |
 | `~/Library/Application Support/spotter/state.json`            | The universal scan cursor (last processed WhatsApp message). Atomic, written only after every batch in a run succeeds.                           | Manually resetting or backfilling. Delete the file to re-trigger the initial `initial_backfill_days` backfill on the next run. |

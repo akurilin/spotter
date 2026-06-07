@@ -17,8 +17,9 @@ from typing import Any
 from spotter.alerts import build_alerts, format_alert_line, read_existing_alert_keys
 from spotter.classifier import classify_messages
 from spotter.config import AppConfig, LoggingConfig, load_config, load_env_file
-from spotter.errors import ClassificationError, ConfigError, LaunchAgentError, NotificationError
+from spotter.errors import ClassificationError, ConfigError, LaunchAgentError, MonitoringError, NotificationError
 from spotter.launchagent import install_launch_agent, show_launch_agent_status, uninstall_launch_agent
+from spotter.monitoring import ping_dead_mans_snitch
 from spotter.notifications import NotificationFailure, notify_alerts, send_test_notifications
 from spotter.paths import app_log_path
 from spotter.usage import UsageAccumulator, UsageRecord, new_run_id, write_usage_record
@@ -139,6 +140,7 @@ def run_scan(config: AppConfig, dry_run: bool, limit_override: int | None) -> in
     status = "ok"
     message_count = 0
     alert_count = 0
+    completed_successfully = False
 
     LOGGER.info(
         "Scanner run starting: run_id=%s dry_run=%s limit_override=%s model=%s batch_size=%s topics=%s",
@@ -186,6 +188,7 @@ def run_scan(config: AppConfig, dry_run: bool, limit_override: int | None) -> in
                 state["last_run_at"] = now_iso()
                 atomic_write_json(state_path, state)
                 LOGGER.info("Advanced cursor to message %s.", next_cursor)
+            completed_successfully = True
             return 0
 
         LOGGER.info("Fetched %s group messages for classification.", message_count)
@@ -212,6 +215,7 @@ def run_scan(config: AppConfig, dry_run: bool, limit_override: int | None) -> in
             for alert in alerts:
                 print(format_alert_line(alert))
             LOGGER.info("Dry-run: cursor would advance to message %s.", max_processed_pk)
+            completed_successfully = True
             return 0
 
         append_jsonl(alerts_path, [alert.to_dict() for alert in alerts])
@@ -229,6 +233,7 @@ def run_scan(config: AppConfig, dry_run: bool, limit_override: int | None) -> in
 
         LOGGER.info("Wrote %s alert(s).", alert_count)
         LOGGER.info("Advanced cursor to message %s.", max_processed_pk)
+        completed_successfully = True
         return 0
     except Exception:
         if status == "ok":
@@ -257,6 +262,8 @@ def run_scan(config: AppConfig, dry_run: bool, limit_override: int | None) -> in
                 )
             except OSError as exc:
                 LOGGER.warning("Could not write usage record to %s: %s", usage_path, exc)
+        if completed_successfully and not dry_run:
+            report_success_to_dead_mans_snitch(os.environ.get("DEAD_MANS_SNITCH_URL"), errors_path, run_id)
 
 
 def read_json_file(path: Path, default: Any) -> Any:
@@ -317,6 +324,24 @@ def write_notification_failures(path: Path, failures: list[NotificationFailure])
             for failure in failures
         ],
     )
+
+
+def report_success_to_dead_mans_snitch(url: str | None, errors_path: Path, run_id: str) -> None:
+    """Ping the configured Dead Man's Snitch without changing scan success."""
+    if not url:
+        return
+
+    try:
+        ping_dead_mans_snitch(url)
+    except MonitoringError as exc:
+        LOGGER.warning("Dead Man's Snitch ping failed: %s", exc)
+        try:
+            write_error(errors_path, "dead_mans_snitch_failed", str(exc), {"run_id": run_id})
+        except OSError as write_exc:
+            LOGGER.warning("Could not write Dead Man's Snitch failure to %s: %s", errors_path, write_exc)
+        return
+
+    LOGGER.info("Dead Man's Snitch ping succeeded.")
 
 
 def now_iso() -> str:

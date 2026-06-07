@@ -20,6 +20,7 @@ Design constraints worth knowing before changing anything:
 - Treat the TUI as a keyboard-first command-line interface. Do not add mouse-oriented controls such as clickable buttons for primary actions; expose actions through documented key bindings and make current status visible at a glance in text. Shortcuts for page-specific actions must only be active and visible on the relevant page.
 - Before committing Python changes, run Ruff on the project with `./.venv/bin/python -m ruff format .` and `./.venv/bin/python -m ruff check .`.
 - Run Ruff / formatting / linting only before committing
+- Do not assume every change needs tests. Add tests only when they provide meaningful regression protection for behavior with real risk or complexity; skip low-leverage tests for straightforward wiring, configuration, and mechanical changes.
 - Avoid including any information about real WhatsApp groups, their users and their messages' contents when writing test cases and evals
 - Keep the Project Files section below in sync: whenever a tracked file is added, removed, renamed, or substantially repurposed, update its entry in the same change.
 
@@ -33,6 +34,7 @@ Design constraints worth knowing before changing anything:
 - `spotter/identity.py` - Shared WhatsApp sender identity normalization and display fallbacks.
 - `spotter/launchagent.py` - LaunchAgent generation, installation, removal, and status inspection.
 - `spotter/models.py` - Shared domain dataclasses passed between scanner subsystems.
+- `spotter/monitoring.py` - Dead Man's Snitch successful-run heartbeat delivery.
 - `spotter/notifications.py` - macOS and Pushover notification delivery and formatting.
 - `spotter/paths.py` - Runtime log and application path resolution.
 - `spotter/preflight.py` - Read-only WhatsApp database access checks.
