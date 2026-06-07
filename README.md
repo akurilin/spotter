@@ -165,7 +165,7 @@ tail -f ~/Library/Logs/spotter/spotter.log
 
 ## Manual classifier evals
 
-Historical classifier failures live in `evals/cases.jsonl` and can be replayed by hand against the configured live model. They are deliberately separate from normal tests because they call OpenRouter and spend real tokens.
+A small set of scrubbed historical failures and synthetic stratified cases (obvious positives, obvious negatives, borderline phrasings, mixed-message batches) lives in `evals/cases.jsonl` and can be replayed by hand against the configured live model. They are deliberately separate from normal tests because they call OpenRouter and spend real tokens.
 
 ```bash
 # Inspect cases without calling the model.
@@ -180,6 +180,16 @@ Historical classifier failures live in `evals/cases.jsonl` and can be replayed b
 
 See `evals/README.md` for the case format and privacy-scrubbing expectations.
 The eval runner uses `llm.model` from `config.json` and refuses to run unless `llm.temperature` is `0` or JSON `null` for models that reject the temperature parameter.
+
+### Comparing multiple models
+
+`evals/compare_models.py` runs the same case suite across the OpenRouter slugs declared in `evals/models.json` and prints a comparison table (pass / raw pre-threshold correctness / p50 latency / token usage / error count) per model. A JSON artifact with full per-case detail is written to `evals/results/compare_<utc-timestamp>.json` (gitignored).
+
+```bash
+./.venv/bin/python evals/compare_models.py --live
+```
+
+Each registry entry is a slug plus optional toggles: `"omit_temperature": true` for providers that reject the temperature parameter, `"use_structured_output": false` to pre-disable strict JSON schema mode, and `"skip": true` to keep a model in the registry without running it (useful for parking expensive baselines like Sonnet/Opus that aren't part of every sweep). If a provider rejects the strict `response_format` JSON schema mid-run, the driver falls back to freeform JSON for the rest of that model and marks its mode as `freeform` in the output.
 
 ## State
 
