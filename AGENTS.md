@@ -26,22 +26,22 @@ Design constraints worth knowing before changing anything:
 
 # Project Files
 
-- `spotter.py` - Main CLI, scan orchestration, state writes, and error recording.
+- `spotter.py` - CLI entry point, scan orchestration, state writes, and error recording.
 - `spotter/alerts.py` - Topic-priority alert selection, deduplication, and formatting.
-- `spotter/classifier.py` - Direct OpenRouter HTTP client: system prompt, JSON schema, batching, retry, parsing, and match validation.
-- `spotter/config.py` - Central Pydantic-based typed configuration loading, defaults, and validation.
+- `spotter/classifier.py` - Direct OpenRouter HTTP calls, system prompt, JSON schema, batching, retries, response parsing, and match validation.
+- `spotter/config.py` - Central Pydantic-based typed configuration loading, defaults, migration compatibility, and validation.
 - `spotter/errors.py` - Shared application exception types.
 - `spotter/identity.py` - Shared WhatsApp sender identity normalization and display fallbacks.
-- `spotter/launchagent.py` - LaunchAgent generation, installation, removal, and status inspection.
-- `spotter/models.py` - Shared domain dataclasses passed between scanner subsystems.
+- `spotter/launchagent.py` - LaunchAgent plist generation, installation, removal, and status inspection.
+- `spotter/models.py` - Shared domain values passed between scanner subsystems.
 - `spotter/monitoring.py` - Dead Man's Snitch successful-run heartbeat delivery.
-- `spotter/notifications.py` - macOS and Pushover notification delivery and formatting.
+- `spotter/notifications.py` - macOS Notification Center and Pushover delivery and formatting.
 - `spotter/paths.py` - Runtime log and application path resolution.
 - `spotter/preflight.py` - Read-only WhatsApp database access checks.
-- `spotter/tui.py` - Keyboard-first Textual terminal interface.
+- `spotter/tui.py` - Keyboard-first Textual interface for alerts, runs, configuration, topics, and LaunchAgent controls.
 - `spotter/topic_evals.py` - User-authored per-topic positive/negative eval execution and reporting.
-- `spotter/usage.py` - Per-run LLM token and scanner usage records.
-- `spotter/whatsapp_db.py` - Read-only WhatsApp SQLite queries and message conversion.
+- `spotter/usage.py` - Per-run LLM token and scanner usage records appended to `usage.jsonl`.
+- `spotter/whatsapp_db.py` - Read-only access to `ChatStorage.sqlite`, group filtering, cursor reads, and message conversion.
 - `tests/support.py` - Shared unittest helpers and application logging suppression.
 - `tests/test_alerts.py` - Alert deduplication and first-configured-topic regression test.
 - `tests/test_classifier.py` - OpenRouter request, retry, usage, response validation, and typed match contract tests.

@@ -26,27 +26,7 @@ Features spotter is particularly proud of:
 - **Dry-run modes.** `--dry-run` and `--dry-run --limit N` let you exercise the full pipeline against real WhatsApp data without writing state, alerts, or notifications. Selected alerts still print to the terminal so you can sanity-check topic descriptions before committing.
 - **Deliberately narrow scope.** Single user, single machine, single LLM gateway, single notification flow. No multi-tenancy, no provider abstraction, no plugin system.
 
-## Architecture
-
-spotter is a single-process Python CLI split into a thin entry point plus a small package of helpers:
-
-| Component                       | Role                                                                                  |
-| ------------------------------- | ------------------------------------------------------------------------------------- |
-| `spotter.py`                    | CLI entry point, scan orchestration, state writes, and error recording                |
-| `spotter/alerts.py`             | Topic-priority alert selection, deduplication, and formatting                         |
-| `spotter/classifier.py`         | Direct OpenRouter HTTP calls, batching, retries, response parsing, and validation      |
-| `spotter/config.py`             | Pydantic-based typed configuration loading, defaults, and validation                  |
-| `spotter/identity.py`           | Shared sender identity normalization and display fallbacks                            |
-| `spotter/models.py`             | Shared domain values passed between scanner subsystems                                |
-| `spotter/whatsapp_db.py`        | Read-only access to the WhatsApp `ChatStorage.sqlite`, group filtering, cursor reads  |
-| `spotter/notifications.py`      | macOS Notification Center (`osascript`) and Pushover HTTP delivery                    |
-| `spotter/monitoring.py`         | Dead Man's Snitch successful-run heartbeat delivery                                  |
-| `spotter/launchagent.py`        | Generate, install, query, and remove the LaunchAgent plist                            |
-| `spotter/tui.py`                | Textual terminal UI for run history, alert history, and LaunchAgent controls          |
-| `spotter/topic_evals.py`        | User-authored per-topic positive/negative eval execution and reporting                |
-| `spotter/usage.py`              | Per-run model token-usage records appended to `usage.jsonl`                           |
-| `spotter/errors.py`             | Structured error records for `errors.jsonl`                                           |
-| `spotter/paths.py`              | Runtime log path resolution                                                           |
+## How it works
 
 Runtime targets:
 
@@ -55,7 +35,7 @@ Runtime targets:
 - **Scheduler:** macOS launchd via a generated user-level LaunchAgent.
 - **Notifications:** macOS Notification Center via `osascript`, Pushover via plain HTTPS.
 
-### How a scan flows end to end
+### Scan flow
 
 1. The CLI loads `config.json` and `.env`, configures logging, and opens the WhatsApp `ChatStorage.sqlite` read-only.
 2. It reads the universal cursor from `state.json`. On the first run with no cursor, it backfills the last `initial_backfill_days` of group messages (default 14).
