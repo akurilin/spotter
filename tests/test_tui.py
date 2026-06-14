@@ -109,13 +109,13 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             {
                 "id": "priority_topic",
                 "name": "Priority topic",
-                "threshold": 0.8,
+                "positive_examples": ["Positive one."],
+                "negative_examples": ["Negative one.", "Negative two."],
                 "description": "First configured topic.",
             },
             {
                 "id": "secondary_topic",
                 "name": "Secondary topic",
-                "threshold": 0.7,
                 "description": (
                     "Second topic with enough detail to wrap across multiple lines in the default topics table "
                     "description column while remaining completely readable."
@@ -144,7 +144,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 topics_table = app.query_one("#topics-table", DataTable)
                 self.assertEqual("topics", tabs.active)
                 self.assertEqual(
-                    ["1", "priority_topic", "Priority topic", "80%", "First configured topic."],
+                    ["1", "priority_topic", "Priority topic", "1", "2", "First configured topic."],
                     topics_table.get_row_at(0),
                 )
                 self.assertEqual(
@@ -152,7 +152,8 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                         "2",
                         "secondary_topic",
                         "Secondary topic",
-                        "70%",
+                        "0",
+                        "0",
                         (
                             "Second topic with enough detail to wrap across multiple lines in the default topics "
                             "table description column while remaining completely readable."
@@ -171,7 +172,6 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                         {
                             "id": "reloaded_topic",
                             "name": "Reloaded topic",
-                            "threshold": 0.9,
                             "description": "Loaded from the edited config file.",
                         }
                     ],
@@ -179,7 +179,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 write_json(config_path, updated_config)
                 await pilot.press("f5")
                 self.assertEqual(
-                    ["1", "reloaded_topic", "Reloaded topic", "90%", "Loaded from the edited config file."],
+                    ["1", "reloaded_topic", "Reloaded topic", "0", "0", "Loaded from the edited config file."],
                     topics_table.get_row_at(0),
                 )
                 self.assertIn("Reloaded", str(app.query_one("#topics-summary", Static).render()))

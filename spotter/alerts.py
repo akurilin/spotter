@@ -1,4 +1,4 @@
-"""Build, deduplicate, and format validated topic alerts."""
+"""Select, deduplicate, and format validated topic alerts."""
 
 from __future__ import annotations
 
@@ -19,20 +19,12 @@ def build_alerts(
 ) -> list[Alert]:
     """Turn validated topic matches into one alert per message, preferring configured topic order."""
     message_by_pk = {message.message_pk: message for message in messages}
-    topic_by_id = {topic.id: topic for topic in topics}
     existing_message_pks = {message_pk for message_pk, _topic_id in existing_alert_keys}
     eligible_matches = {}
     alerts = []
 
     for match in matches:
-        message_pk = match.message_pk
-        topic_id = match.topic_id
-        topic = topic_by_id[topic_id]
-        confidence = match.confidence
-
-        if confidence < topic.threshold:
-            continue
-        eligible_matches.setdefault((message_pk, topic_id), match)
+        eligible_matches.setdefault((match.message_pk, match.topic_id), match)
 
     for message_pk, message in message_by_pk.items():
         if message_pk in existing_message_pks:
@@ -49,7 +41,6 @@ def build_alerts(
                     message_pk=message.message_pk,
                     topic_id=topic.id,
                     topic_name=topic.name,
-                    confidence=round(match.confidence, 4),
                     reason=match.reason,
                     notification=match.notification,
                     group_name=message.group_name,

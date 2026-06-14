@@ -28,6 +28,30 @@ class ConfigTests(TestCase):
         with self.assertRaisesRegex(ConfigError, "Duplicate topic ids"):
             parse_config(raw)
 
+    def test_parse_config_accepts_eval_examples_and_ignores_legacy_threshold(self):
+        raw = config_dict(self.temp_dir)
+        raw["topics"][0].update(
+            {
+                "threshold": 0.99,
+                "positive_examples": ["A clear positive."],
+                "negative_examples": ["A clear negative."],
+            }
+        )
+
+        config = parse_config(raw)
+
+        self.assertEqual(("A clear positive.",), config.topics[0].positive_examples)
+        self.assertEqual(("A clear negative.",), config.topics[0].negative_examples)
+        self.assertNotIn("threshold", config.topics[0].model_dump())
+
+    def test_parse_config_rejects_contradictory_topic_examples(self):
+        raw = config_dict(self.temp_dir)
+        raw["topics"][0]["positive_examples"] = ["Same example."]
+        raw["topics"][0]["negative_examples"] = ["Same example."]
+
+        with self.assertRaisesRegex(ConfigError, "both positive and negative"):
+            parse_config(raw)
+
     def test_parse_config_is_strict_and_rejects_unknown_settings(self):
         raw = config_dict(self.temp_dir)
         raw["llm"] = {"max_tokens": "4000", "provider": "openrouter"}

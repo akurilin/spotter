@@ -32,7 +32,6 @@ class ScanTests(TestCase):
                 "id": "engineering_hiring",
                 "name": "Engineering hiring",
                 "description": "Engineering hiring advice",
-                "threshold": 0.75,
             }
         ]
         config = make_config(temp_dir, raw_config)
@@ -49,7 +48,6 @@ class ScanTests(TestCase):
             Match(
                 message_pk=message.message_pk,
                 topic_id="engineering_hiring",
-                confidence=0.9,
                 reason="Founder asks for engineering hiring advice.",
                 notification="Founder seeking engineering hiring advice.",
             ),
@@ -105,6 +103,7 @@ class ScanTests(TestCase):
         self.assertEqual(message.message_pk, alerts[0]["message_pk"])
         self.assertEqual("engineering_hiring", alerts[0]["topic_id"])
         self.assertEqual("2026-01-02T03:05:00+00:00", alerts[0]["created_at"])
+        self.assertNotIn("confidence", alerts[0])
         notify_alerts.assert_called_once()
         self.assertEqual(config.notifications, notify_alerts.call_args.args[0])
         self.assertEqual(alerts, [alert.to_dict() for alert in notify_alerts.call_args.args[1]])
@@ -130,7 +129,7 @@ class ScanTests(TestCase):
         )
         log_text = log_path.read_text(encoding="utf-8")
         self.assertIn("Scanner run starting", log_text)
-        self.assertIn("Classification complete: matches=1 alerts_after_thresholds=1", log_text)
+        self.assertIn("Classification complete: matches=1 alerts_selected=1", log_text)
         self.assertIn("Wrote 1 alert(s).", log_text)
         self.assertIn("Advanced cursor to message 42.", log_text)
 

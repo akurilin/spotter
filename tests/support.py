@@ -44,7 +44,6 @@ def config_dict(temp_dir: Path) -> dict[str, Any]:
                 "id": "example_topic",
                 "name": "Example topic",
                 "description": "A synthetic topic used only by tests.",
-                "threshold": 0.75,
             }
         ],
     }

@@ -55,7 +55,15 @@ class ClassifierTests(TestCase):
             matches = classify_batch(
                 "test-key",
                 LlmConfig(temperature=None),
-                (Topic(id="example_topic", name="Example topic", description="Synthetic topic."),),
+                (
+                    Topic(
+                        id="example_topic",
+                        name="Example topic",
+                        description="Synthetic topic.",
+                        positive_examples=("Should match.",),
+                        negative_examples=("Should not match.",),
+                    ),
+                ),
                 [example_message()],
                 accumulator,
             )
@@ -65,8 +73,18 @@ class ClassifierTests(TestCase):
         self.assertEqual("anthropic/claude-sonnet-4.6", payload["model"])
         self.assertNotIn("temperature", payload)
         self.assertEqual("system", payload["messages"][0]["role"])
+        self.assertIn("every message against every topic independently", payload["messages"][0]["content"])
         self.assertEqual("user", payload["messages"][1]["role"])
+        classifier_input = json.loads(payload["messages"][1]["content"])
+        self.assertEqual(
+            [{"id": "example_topic", "name": "Example topic", "description": "Synthetic topic."}],
+            classifier_input["topics"],
+        )
         self.assertTrue(payload["response_format"]["json_schema"]["strict"])
+        self.assertNotIn(
+            "confidence",
+            payload["response_format"]["json_schema"]["schema"]["properties"]["matches"]["items"]["properties"],
+        )
         self.assertEqual(
             {"require_parameters": True, "data_collection": "deny"},
             payload["provider"],
@@ -164,21 +182,32 @@ class ClassifierTests(TestCase):
         self.assertEqual('{"matches": []}', strip_code_fence('```\n{"matches": []}\n```'))
         self.assertEqual('{"matches": []}', strip_code_fence('{"matches": []}'))
 
-    def test_validate_matches_returns_typed_matches(self):
+    def test_validate_matches_keeps_multiple_topics_and_deduplicates_pairs(self):
         matches = validate_matches(
             {
                 "matches": [
                     {
                         "message_pk": 42,
                         "topic_id": "example_topic",
-                        "confidence": 0.9,
                         "reason": "Clear match.",
                         "notification": "Example topic matched.",
-                    }
+                    },
+                    {
+                        "message_pk": 42,
+                        "topic_id": "secondary_topic",
+                        "reason": "Also a clear match.",
+                        "notification": "Secondary topic matched.",
+                    },
+                    {
+                        "message_pk": 42,
+                        "topic_id": "example_topic",
+                        "reason": "Duplicate match.",
+                        "notification": "Duplicate match.",
+                    },
                 ]
             },
             message_pks={42},
-            topic_ids={"example_topic"},
+            topic_ids={"example_topic", "secondary_topic"},
         )
 
         self.assertEqual(
@@ -186,10 +215,15 @@ class ClassifierTests(TestCase):
                 Match(
                     message_pk=42,
                     topic_id="example_topic",
-                    confidence=0.9,
                     reason="Clear match.",
                     notification="Example topic matched.",
-                )
+                ),
+                Match(
+                    message_pk=42,
+                    topic_id="secondary_topic",
+                    reason="Also a clear match.",
+                    notification="Secondary topic matched.",
+                ),
             ],
             matches,
         )

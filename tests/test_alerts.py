@@ -16,13 +16,11 @@ class AlertTests(TestCase):
                 "id": "engineering_hiring",
                 "name": "Engineering hiring",
                 "description": "Engineering hiring advice",
-                "threshold": 0.75,
             },
             {
                 "id": "cto_coaching",
                 "name": "CTO coaching",
                 "description": "CTO coaching opportunities",
-                "threshold": 0.75,
             },
         ]
         config = make_config(self.temp_dir, raw_config)
@@ -39,14 +37,12 @@ class AlertTests(TestCase):
             Match(
                 message_pk=message.message_pk,
                 topic_id="cto_coaching",
-                confidence=0.78,
                 reason="Founder needs CTO coaching.",
                 notification="Founder looking for CTO coaching.",
             ),
             Match(
                 message_pk=message.message_pk,
                 topic_id="engineering_hiring",
-                confidence=0.82,
                 reason="Founder asks about CTO hiring.",
                 notification="Founder seeking CTO hiring advice.",
             ),

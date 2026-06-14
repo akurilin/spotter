@@ -43,7 +43,12 @@
       "id": "example_topic",
       "name": "Example topic",
       "description": "Replace this with a natural-language description of what you want to be alerted about. The classifier matches when a message looks like a clear, substantive instance of this topic. Be specific about what should and should not count: include the kind of intent, role, or context you care about, and explicitly call out near-misses you want excluded (e.g. job posts, announcements, generic mentions). The more precise the description, the fewer false positives.",
-      "threshold": 0.75
+      "positive_examples": [
+        "A synthetic example of a message that should match this topic."
+      ],
+      "negative_examples": [
+        "A synthetic near-miss that should not match this topic."
+      ]
     }
   ]
 }

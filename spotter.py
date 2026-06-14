@@ -22,6 +22,7 @@ from spotter.launchagent import install_launch_agent, show_launch_agent_status, 
 from spotter.monitoring import ping_dead_mans_snitch
 from spotter.notifications import NotificationFailure, notify_alerts, send_test_notifications
 from spotter.paths import app_log_path
+from spotter.topic_evals import run_topic_evals
 from spotter.usage import UsageAccumulator, UsageRecord, new_run_id, write_usage_record
 from spotter.whatsapp_db import (
     count_groups,
@@ -46,6 +47,15 @@ def main() -> int:
     run_parser.add_argument("--dry-run", action="store_true", help="Do not write state, alerts, or notifications.")
     run_parser.add_argument("--limit", type=int, help="Override max_messages_per_run for this run.")
 
+    eval_parser = subparsers.add_parser("eval-topics", help="Run configured positive and negative topic examples.")
+    eval_parser.add_argument("--runs", type=positive_int_argument, default=1, help="Fixed number of eval repetitions.")
+    eval_parser.add_argument("--model", help="Override llm.model for this eval run.")
+    eval_parser.add_argument(
+        "--omit-temperature",
+        action="store_true",
+        help="Omit the temperature parameter for models that reject it.",
+    )
+
     subparsers.add_parser("test-notification", help="Send a test macOS notification.")
     subparsers.add_parser("install-agent", help="Install or update the per-user macOS LaunchAgent.")
     subparsers.add_parser("uninstall-agent", help="Unload and remove the per-user macOS LaunchAgent.")
@@ -63,6 +73,15 @@ def main() -> int:
 
         if args.command == "run":
             return run_scan(config, dry_run=args.dry_run, limit_override=args.limit)
+        if args.command == "eval-topics":
+            llm_updates = {}
+            if args.model:
+                llm_updates["model"] = args.model
+            if args.omit_temperature:
+                llm_updates["temperature"] = None
+            if llm_updates:
+                config = config.model_copy(update={"llm": config.llm.model_copy(update=llm_updates)})
+            return run_topic_evals(config, args.runs)
         if args.command == "test-notification":
             send_test_notifications(config.notifications)
             return 0
@@ -100,6 +119,14 @@ def resolve_config_path(path: Path) -> Path:
     if expanded_path.is_absolute():
         return expanded_path
     return (Path.cwd() / expanded_path).resolve()
+
+
+def positive_int_argument(value: str) -> int:
+    """Parse a positive integer for argparse."""
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
 
 
 def configure_logging(config: LoggingConfig) -> None:
@@ -208,7 +235,7 @@ def run_scan(config: AppConfig, dry_run: bool, limit_override: int | None) -> in
         alerts = build_alerts(config.topics, messages, matches, existing_alert_keys, created_at=now_iso())
         alert_count = len(alerts)
         max_processed_pk = fetched_high_water_pk or max(message.message_pk for message in messages)
-        LOGGER.info("Classification complete: matches=%s alerts_after_thresholds=%s", len(matches), alert_count)
+        LOGGER.info("Classification complete: matches=%s alerts_selected=%s", len(matches), alert_count)
 
         if dry_run:
             LOGGER.info("Dry-run: %s alert(s) would be written.", alert_count)

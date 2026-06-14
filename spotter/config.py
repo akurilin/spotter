@@ -51,11 +51,16 @@ def require_non_empty_path(value: Any) -> Any:
     return value
 
 
+def list_to_tuple(value: Any) -> Any:
+    """Convert JSON arrays to immutable tuples before strict validation."""
+    return tuple(value) if isinstance(value, list) else value
+
+
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 PositiveInt = Annotated[int, Field(gt=0)]
 NonNegativeInt = Annotated[int, Field(ge=0)]
 PositiveFloat = Annotated[float, Field(gt=0)]
-UnitFloat = Annotated[float, Field(ge=0, le=1)]
+StringTuple = Annotated[tuple[NonEmptyStr, ...], BeforeValidator(list_to_tuple)]
 ConfiguredPath = Annotated[
     Path,
     BeforeValidator(require_non_empty_path),
@@ -73,7 +78,30 @@ class Topic(ConfigModel):
     id: NonEmptyStr
     name: NonEmptyStr
     description: NonEmptyStr
-    threshold: UnitFloat = 0.75
+    positive_examples: StringTuple = ()
+    negative_examples: StringTuple = ()
+
+    @model_validator(mode="before")
+    @classmethod
+    def ignore_legacy_threshold(cls, value: Any) -> Any:
+        """Accept older configs while removing thresholds from active behavior."""
+        if isinstance(value, dict) and "threshold" in value:
+            value = dict(value)
+            value.pop("threshold")
+        return value
+
+    @model_validator(mode="after")
+    def validate_examples(self) -> Self:
+        duplicate_positive = duplicate_values(self.positive_examples)
+        duplicate_negative = duplicate_values(self.negative_examples)
+        contradictory = sorted(set(self.positive_examples) & set(self.negative_examples))
+        if duplicate_positive:
+            raise ValueError(f"Duplicate positive examples: {', '.join(duplicate_positive)}")
+        if duplicate_negative:
+            raise ValueError(f"Duplicate negative examples: {', '.join(duplicate_negative)}")
+        if contradictory:
+            raise ValueError(f"Examples cannot be both positive and negative: {', '.join(contradictory)}")
+        return self
 
 
 class WhatsAppConfig(ConfigModel):
@@ -174,3 +202,8 @@ def parse_config(raw: Any) -> AppConfig:
         return AppConfig.model_validate_json(encoded)
     except ValidationError as exc:
         raise ConfigError(f"Invalid config: {exc}") from exc
+
+
+def duplicate_values(values: tuple[str, ...]) -> list[str]:
+    """Return sorted duplicate strings from a configured tuple."""
+    return sorted({value for value in values if values.count(value) > 1})

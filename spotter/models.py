@@ -23,7 +23,6 @@ class Message:
 class Match:
     message_pk: int
     topic_id: str
-    confidence: float
     reason: str
     notification: str
 
@@ -34,7 +33,6 @@ class Alert:
     message_pk: int
     topic_id: str
     topic_name: str
-    confidence: float
     reason: str
     notification: str
     group_name: str

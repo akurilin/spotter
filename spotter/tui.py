@@ -42,7 +42,6 @@ RUN_COLUMNS: tuple[str, ...] = (
 ALERT_COLUMNS: tuple[str, ...] = (
     "Created",
     "Topic",
-    "Confidence",
     "Group",
     "Sender",
     "Message Time",
@@ -61,10 +60,11 @@ TOPIC_COLUMNS: tuple[str, ...] = (
     "Priority",
     "ID",
     "Name",
-    "Threshold",
+    "Positives",
+    "Negatives",
     "Description",
 )
-TOPIC_COLUMN_WIDTHS: tuple[int, ...] = (8, 24, 28, 10, 80)
+TOPIC_COLUMN_WIDTHS: tuple[int, ...] = (8, 24, 28, 10, 10, 80)
 RUN_SPARKLINE_LIMIT = 50
 HISTORY_REFRESH_INTERVAL_SECONDS = 3
 REDACTED_CONFIG_VALUE = "[redacted]"
@@ -327,7 +327,6 @@ class SpotterTui(App):
             table.add_row(
                 format_timestamp(row.get("created_at")),
                 shorten(row.get("topic_name"), 28),
-                format_confidence(row.get("confidence")),
                 shorten(row.get("group_name"), 36),
                 shorten(row.get("sender_name"), 28),
                 format_timestamp(row.get("local_time")),
@@ -387,7 +386,7 @@ class SpotterTui(App):
         table = self.query_one("#topics-table", DataTable)
         reset_table_with_widths(table, TOPIC_COLUMNS, TOPIC_COLUMN_WIDTHS)
         rows = topic_display_rows(self.config)
-        summary = f"Configured topics: {len(rows)} | First match has priority"
+        summary = f"Configured topics: {len(rows)} | First matching topic is selected for alerts"
         self.query_one("#topics-summary", Static).update(f"{summary} | {message}" if message else summary)
         if not rows:
             add_empty_row(table, len(TOPIC_COLUMNS), "No topics configured.")
@@ -550,7 +549,7 @@ def format_config_value(value: Any) -> str:
     return single_line_text(value)
 
 
-def topic_display_rows(config: AppConfig) -> list[tuple[str, str, str, str, str]]:
+def topic_display_rows(config: AppConfig) -> list[tuple[str, str, str, str, str, str]]:
     """Return configured topics in classifier priority order."""
     rows = []
     for priority, topic in enumerate(config.topics, start=1):
@@ -559,7 +558,8 @@ def topic_display_rows(config: AppConfig) -> list[tuple[str, str, str, str, str]
                 str(priority),
                 topic.id,
                 topic.name,
-                format_confidence(topic.threshold),
+                str(len(topic.positive_examples)),
+                str(len(topic.negative_examples)),
                 single_line_text(topic.description),
             )
         )
@@ -742,16 +742,6 @@ def status_label(value: bool | None) -> str:
     if value is None:
         return "unknown"
     return yes_no(value)
-
-
-def format_confidence(value: Any) -> str:
-    """Format a confidence score as a percentage when possible."""
-    if value is None:
-        return ""
-    try:
-        return f"{float(value) * 100:.0f}%"
-    except (TypeError, ValueError):
-        return text_value(value)
 
 
 def format_timestamp(value: Any) -> str:
