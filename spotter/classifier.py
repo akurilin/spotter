@@ -128,7 +128,7 @@ def classify_batch(
 
     accumulator.add(response.get("usage"))
     parsed = parse_json_response(response)
-    return validate_matches(parsed, {message.message_pk for message in batch}, {topic.id for topic in topics})
+    return validate_matches(parsed, batch, {topic.id for topic in topics})
 
 
 def post_openrouter(
@@ -271,8 +271,11 @@ def system_prompt() -> str:
         "Do not stop after the first matching topic. Return each matching message/topic pair at most once. "
         "Use the exact message_pk and topic id values from the input. "
         "Never invent, approximate, or alter message_pk values; omit a match if the exact id is not present. "
+        "For every match, evidence must be a short verbatim quote copied exactly from the message text that directly "
+        "establishes the match. If no such quote exists, omit the match. "
         "The reason must identify the direct evidence in the message text; if there is no direct evidence, omit it. "
-        "Keep reason under 120 characters and notification under 100 characters. "
+        "Reason, notification, and evidence must all be non-empty. Never return a non-match to explain why it does "
+        "not match. Keep reason under 120 characters and notification under 100 characters. "
         "Return JSON with one top-level key named matches."
     )
 
@@ -291,10 +294,11 @@ def matches_schema() -> dict[str, Any]:
                     "properties": {
                         "message_pk": {"type": "integer"},
                         "topic_id": {"type": "string"},
-                        "reason": {"type": "string"},
-                        "notification": {"type": "string"},
+                        "evidence": {"type": "string", "minLength": 1},
+                        "reason": {"type": "string", "minLength": 1},
+                        "notification": {"type": "string", "minLength": 1},
                     },
-                    "required": ["message_pk", "topic_id", "reason", "notification"],
+                    "required": ["message_pk", "topic_id", "evidence", "reason", "notification"],
                 },
             }
         },
@@ -343,11 +347,12 @@ def strip_code_fence(text: str) -> str:
     return body.strip()
 
 
-def validate_matches(parsed: Any, message_pks: set[int], topic_ids: set[str]) -> list[Match]:
-    """Validate model matches and drop malformed or hallucinated individual matches."""
+def validate_matches(parsed: Any, messages: list[Message], topic_ids: set[str]) -> list[Match]:
+    """Validate model matches and require verbatim evidence from the source message."""
     if not isinstance(parsed, dict) or not isinstance(parsed.get("matches"), list):
         raise ClassificationError("OpenRouter response must be an object with a matches array.")
 
+    message_text_by_pk = {message.message_pk: message.text for message in messages}
     valid_matches = []
     seen_keys: set[tuple[int, str]] = set()
     for item in parsed["matches"]:
@@ -361,14 +366,21 @@ def validate_matches(parsed: Any, message_pks: set[int], topic_ids: set[str]) ->
             continue
 
         topic_id = str(item.get("topic_id", ""))
+        evidence = str(item.get("evidence", "")).strip()
         reason = str(item.get("reason", "")).strip()
         notification = str(item.get("notification", "")).strip()
 
-        if message_pk not in message_pks:
+        if message_pk not in message_text_by_pk:
             LOGGER.warning("Ignoring OpenRouter match with unknown message_pk: %s", message_pk)
             continue
         if topic_id not in topic_ids:
             LOGGER.warning("Ignoring OpenRouter match with unknown topic_id: %s", topic_id)
+            continue
+        if not evidence or not reason or not notification:
+            LOGGER.warning("Ignoring OpenRouter match with blank evidence, reason, or notification.")
+            continue
+        if evidence not in message_text_by_pk[message_pk]:
+            LOGGER.warning("Ignoring OpenRouter match whose evidence is not present in message %s.", message_pk)
             continue
         key = (message_pk, topic_id)
         if key in seen_keys:
@@ -379,6 +391,7 @@ def validate_matches(parsed: Any, message_pks: set[int], topic_ids: set[str]) ->
             Match(
                 message_pk=message_pk,
                 topic_id=topic_id,
+                evidence=evidence,
                 reason=reason,
                 notification=notification,
             )

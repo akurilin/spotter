@@ -23,6 +23,7 @@ class Message:
 class Match:
     message_pk: int
     topic_id: str
+    evidence: str
     reason: str
     notification: str
 
@@ -33,6 +34,7 @@ class Alert:
     message_pk: int
     topic_id: str
     topic_name: str
+    evidence: str
     reason: str
     notification: str
     group_name: str

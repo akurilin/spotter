@@ -48,6 +48,7 @@ class ScanTests(TestCase):
             Match(
                 message_pk=message.message_pk,
                 topic_id="engineering_hiring",
+                evidence="hiring an engineering leader",
                 reason="Founder asks for engineering hiring advice.",
                 notification="Founder seeking engineering hiring advice.",
             ),
@@ -102,6 +103,7 @@ class ScanTests(TestCase):
         self.assertEqual(1, len(alerts))
         self.assertEqual(message.message_pk, alerts[0]["message_pk"])
         self.assertEqual("engineering_hiring", alerts[0]["topic_id"])
+        self.assertEqual("hiring an engineering leader", alerts[0]["evidence"])
         self.assertEqual("2026-01-02T03:05:00+00:00", alerts[0]["created_at"])
         self.assertNotIn("confidence", alerts[0])
         notify_alerts.assert_called_once()

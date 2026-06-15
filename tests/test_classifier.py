@@ -85,6 +85,12 @@ class ClassifierTests(TestCase):
             "confidence",
             payload["response_format"]["json_schema"]["schema"]["properties"]["matches"]["items"]["properties"],
         )
+        match_schema = payload["response_format"]["json_schema"]["schema"]["properties"]["matches"]["items"]
+        self.assertIn("evidence", match_schema["properties"])
+        self.assertEqual(
+            {"message_pk", "topic_id", "evidence", "reason", "notification"},
+            set(match_schema["required"]),
+        )
         self.assertEqual(
             {"require_parameters": True, "data_collection": "deny"},
             payload["provider"],
@@ -189,24 +195,27 @@ class ClassifierTests(TestCase):
                     {
                         "message_pk": 42,
                         "topic_id": "example_topic",
+                        "evidence": "Synthetic test message",
                         "reason": "Clear match.",
                         "notification": "Example topic matched.",
                     },
                     {
                         "message_pk": 42,
                         "topic_id": "secondary_topic",
+                        "evidence": "Synthetic test message",
                         "reason": "Also a clear match.",
                         "notification": "Secondary topic matched.",
                     },
                     {
                         "message_pk": 42,
                         "topic_id": "example_topic",
+                        "evidence": "Synthetic test message",
                         "reason": "Duplicate match.",
                         "notification": "Duplicate match.",
                     },
                 ]
             },
-            message_pks={42},
+            messages=[example_message()],
             topic_ids={"example_topic", "secondary_topic"},
         )
 
@@ -215,18 +224,47 @@ class ClassifierTests(TestCase):
                 Match(
                     message_pk=42,
                     topic_id="example_topic",
+                    evidence="Synthetic test message",
                     reason="Clear match.",
                     notification="Example topic matched.",
                 ),
                 Match(
                     message_pk=42,
                     topic_id="secondary_topic",
+                    evidence="Synthetic test message",
                     reason="Also a clear match.",
                     notification="Secondary topic matched.",
                 ),
             ],
             matches,
         )
+
+    def test_validate_matches_rejects_blank_fields_and_non_verbatim_evidence(self):
+        valid_match = {
+            "message_pk": 42,
+            "topic_id": "example_topic",
+            "evidence": "Synthetic test message",
+            "reason": "Direct evidence.",
+            "notification": "Example topic matched.",
+        }
+        invalid_updates = (
+            {"evidence": ""},
+            {"reason": "  "},
+            {"notification": ""},
+            {"evidence": "synthetic test message"},
+        )
+
+        for update in invalid_updates:
+            with self.subTest(update=update):
+                parsed_match = valid_match | update
+                self.assertEqual(
+                    [],
+                    validate_matches(
+                        {"matches": [parsed_match]},
+                        messages=[example_message()],
+                        topic_ids={"example_topic"},
+                    ),
+                )
 
 
 def example_message() -> Message:

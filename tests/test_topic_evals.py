@@ -32,18 +32,21 @@ class TopicEvalTests(TestCase):
             Match(
                 message_pk=examples[0].message.message_pk,
                 topic_id="primary",
+                evidence="Overlapping positive.",
                 reason="Matches primary.",
                 notification="Primary match.",
             ),
             Match(
                 message_pk=examples[0].message.message_pk,
                 topic_id="secondary",
+                evidence="Overlapping positive.",
                 reason="Also matches secondary.",
                 notification="Secondary match.",
             ),
             Match(
                 message_pk=examples[1].message.message_pk,
                 topic_id="secondary",
+                evidence="Different topic only.",
                 reason="Matches a different topic.",
                 notification="Secondary match.",
             ),
@@ -58,6 +61,7 @@ class TopicEvalTests(TestCase):
         passing_match = Match(
             message_pk=1,
             topic_id="example_topic",
+            evidence="Expected positive.",
             reason="Matches.",
             notification="Match.",
         )

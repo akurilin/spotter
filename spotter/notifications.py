@@ -83,6 +83,7 @@ def send_test_notifications(config: NotificationConfig) -> None:
         message_pk=0,
         topic_id="test",
         topic_name="Engineering hiring",
+        evidence="design a better interview loop",
         reason="Test notification",
         notification="Test notification",
         group_name="Example group",

@@ -37,12 +37,14 @@ class AlertTests(TestCase):
             Match(
                 message_pk=message.message_pk,
                 topic_id="cto_coaching",
+                evidence="CTO hunt",
                 reason="Founder needs CTO coaching.",
                 notification="Founder looking for CTO coaching.",
             ),
             Match(
                 message_pk=message.message_pk,
                 topic_id="engineering_hiring",
+                evidence="CTO hunt",
                 reason="Founder asks about CTO hiring.",
                 notification="Founder seeking CTO hiring advice.",
             ),

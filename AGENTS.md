@@ -7,7 +7,7 @@ Operationally it reads the WhatsApp desktop app's `ChatStorage.sqlite` in read-o
 Design constraints worth knowing before changing anything:
 - The WhatsApp database is opened with SQLite URI `mode=ro` — never modify WhatsApp files.
 - Single user, single machine, single LLM gateway (OpenRouter). No multi-tenancy or provider abstraction.
-- Every WhatsApp message is treated as untrusted input; validated matches must reference a `message_pk` from the current batch and a `topic_id` from `config.json`.
+- Every WhatsApp message is treated as untrusted input; validated matches must reference a `message_pk` from the current batch and a `topic_id` from `config.json`, include non-empty reason and notification text, and provide a verbatim evidence quote found in the matched message.
 - `README.md` has the full architecture, configuration model, and end-to-end scan flow if more context is needed.
 
 # Project Instructions
@@ -21,7 +21,7 @@ Design constraints worth knowing before changing anything:
 - Before committing Python changes, run Ruff on the project with `./.venv/bin/python -m ruff format .` and `./.venv/bin/python -m ruff check .`.
 - Run Ruff / formatting / linting only before committing
 - Do not assume every change needs tests. Add tests only when they provide meaningful regression protection for behavior with real risk or complexity; skip low-leverage tests for straightforward wiring, configuration, and mechanical changes.
-- Avoid including any information about real WhatsApp groups, their users and their messages' contents when writing test cases and evals
+- Avoid including any information about real WhatsApp groups, their users, or their messages' contents in tracked test cases or eval fixtures. The local, gitignored `config.json` may use real message contents in topic eval examples; never copy that data into tracked files.
 - Keep the Project Files section below in sync: whenever a tracked file is added, removed, renamed, or substantially repurposed, update its entry in the same change.
 
 # Project Files

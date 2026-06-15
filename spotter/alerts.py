@@ -41,6 +41,7 @@ def build_alerts(
                     message_pk=message.message_pk,
                     topic_id=topic.id,
                     topic_name=topic.name,
+                    evidence=match.evidence,
                     reason=match.reason,
                     notification=match.notification,
                     group_name=message.group_name,
